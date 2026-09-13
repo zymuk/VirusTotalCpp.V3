@@ -19,7 +19,7 @@ target_include_directories(vtapi_json INTERFACE
 )
 
 # ---------------------------------------------------------------------------
-# vtapi core library (endpoints are added milestone by milestone — see docs/roadmap.md)
+# vtapi core library (endpoint implementations land incrementally)
 # ---------------------------------------------------------------------------
 add_library(vtapi
   src/version.cpp
@@ -34,7 +34,7 @@ target_link_libraries(vtapi PUBLIC vtapi_json)
 target_compile_features(vtapi PUBLIC cxx_std_17)
 
 # ---------------------------------------------------------------------------
-# Example CLI (EICAR demo) — implemented in M5
+# Example CLI (EICAR demo)
 # ---------------------------------------------------------------------------
 add_executable(vtapi_eicar examples/eicar_cli/main.cpp)
 target_link_libraries(vtapi_eicar PRIVATE vtapi)

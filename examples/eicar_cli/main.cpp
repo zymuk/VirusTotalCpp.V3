@@ -1,8 +1,7 @@
 #include <cstdio>
 
-// CLI demo (EICAR) — implemented in M5.
-// Placeholder keeps the target buildable during early milestones.
+// CLI demo (EICAR) — placeholder keeps the target buildable early on.
 int main() {
-    std::printf("vtapi_eicar: not implemented yet (milestone M5)\n");
+    std::printf("vtapi_eicar: not implemented yet\n");
     return 0;
 }
