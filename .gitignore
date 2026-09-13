@@ -1,0 +1,27 @@
+# Build artifacts
+/build/
+build-*/
+*.o
+*.obj
+*.a
+*.so
+*.so.*
+*.dll
+*.exe
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Secrets
+.env
+.env.*
+!/.env.example
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test / runtime
+eicar.com
