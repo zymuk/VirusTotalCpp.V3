@@ -1,25 +1,14 @@
 #include "vtapi/client.hpp"
 
+#include <fstream>
+#include <utility>
+
+#include "vtapi/detail/hashing.hpp"
 #include "vtapi/detail/response.hpp"
 #include "vtapi/types.hpp"
 #include "vtapi/version.hpp"
 
-namespace {
-
-bool is_hex_hash(const std::string& value) {
-    if (value.size() != 32 && value.size() != 40 && value.size() != 64)
-        return false;
-    for (const char c : value) {
-        const bool digit = c >= '0' && c <= '9';
-        const bool lower = c >= 'a' && c <= 'f';
-        const bool upper = c >= 'A' && c <= 'F';
-        if (!digit && !lower && !upper)
-            return false;
-    }
-    return true;
-}
-
-} // namespace
+using vtapi::detail::is_hex_hash;
 
 namespace vtapi {
 
@@ -49,6 +38,46 @@ std::string VirusTotal::get_public_file_scan_link(const std::string& hash) {
     if (!is_hex_hash(hash))
         throw VtError("invalid hash: expected 32/40/64 hex characters");
     return "https://www.virustotal.com/gui/file/" + hash + "/detection";
+}
+
+ScanResult VirusTotal::scan_file(std::vector<uint8_t> data, std::string filename,
+                                 std::optional<std::string> password) {
+    if (data.size() > static_cast<std::size_t>(kFileSizeLimit))
+        throw VtError("file too large: use scan_large_file() (needs a privileged key)");
+
+    std::map<std::string, std::string> fields;
+    if (password && !password->empty())
+        fields["password"] = *password;
+
+    limiter_.wait();
+    const detail::HttpResponse resp = http_.post_multipart(
+        base_url_ + "/files", fields, {{"file", std::move(filename), std::move(data)}});
+    return scan_result_from_json(detail::json_or_throw(resp));
+}
+
+namespace {
+
+// Last path component of a native path. Treats both separators (POSIX and
+// Windows) as directory delimiters so an upload name stays a plain filename.
+std::string base_name(const std::string& path) {
+    const std::string::size_type sep = path.find_last_of("/\\");
+    return sep == std::string::npos ? path : path.substr(sep + 1);
+}
+
+} // namespace
+
+ScanResult VirusTotal::scan_file(const std::string& path,
+                                 std::optional<std::string> password) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+        throw VtError("cannot open file: " + path);
+    }
+    std::vector<uint8_t> data((std::istreambuf_iterator<char>(in)),
+                              std::istreambuf_iterator<char>());
+    if (!in.good() && !in.eof()) {
+        throw VtError("cannot read file: " + path);
+    }
+    return scan_file(std::move(data), base_name(path), std::move(password));
 }
 
 } // namespace vtapi

@@ -1,11 +1,15 @@
 #pragma once
 
 #include <chrono>
+#include <cstdint>
+#include <optional>
 #include <string>
+#include <vector>
 
 #include "vtapi/detail/http.hpp"
 #include "vtapi/detail/ratelimit.hpp"
 #include "vtapi/model/file_report.hpp"
+#include "vtapi/model/scan_result.hpp"
 
 namespace vtapi {
 
@@ -33,6 +37,23 @@ public:
 
     // Public virustotal.com analysis-page link for a file hash (no HTTP call).
     std::string get_public_file_scan_link(const std::string& hash);
+
+    // Submits a file for scanning and returns the queued analysis. filename is
+    // sent to VT; password (optional) protects the scan with a password. Files
+    // larger than kFileSizeLimit throw VtError — use scan_large_file (premium)
+    // for anything bigger.
+    ScanResult scan_file(std::vector<uint8_t> data, std::string filename,
+                         std::optional<std::string> password = {});
+
+    // Reads the file at path into memory and delegates to the data overload;
+    // the filename sent to VT is the path's basename. Missing or oversized
+    // files throw VtError before any request is made.
+    ScanResult scan_file(const std::string& path,
+                         std::optional<std::string> password = {});
+
+    // v3's scan_file accepts at most 32 MB - 1063 bytes (premium keys can go
+    // beyond via the two-step scan_large_file flow).
+    static constexpr int64_t kFileSizeLimit = 33553369;
 
 private:
     detail::HttpClient http_;

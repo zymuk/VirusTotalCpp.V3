@@ -1,37 +1,15 @@
 #include "vtapi/model/file_report.hpp"
 
-namespace {
-
-std::string json_string(const nlohmann::json& object, const char* key) {
-    const auto it = object.find(key);
-    if (it == object.end() || !it->is_string())
-        return {};
-    return it->get<std::string>();
-}
-
-int64_t json_int(const nlohmann::json& object, const char* key) {
-    const auto it = object.find(key);
-    if (it == object.end() || !it->is_number_integer())
-        return 0;
-    return it->get<int64_t>();
-}
-
-std::vector<std::string> json_strings(const nlohmann::json& object, const char* key) {
-    std::vector<std::string> out;
-    const auto it = object.find(key);
-    if (it == object.end() || !it->is_array())
-        return out;
-    for (const auto& element : *it)
-        if (element.is_string())
-            out.push_back(element.get<std::string>());
-    return out;
-}
-
-} // namespace
+#include "vtapi/detail/json.hpp"
 
 namespace vtapi {
 
 FileReport file_report_from_json(const nlohmann::json& root) {
+    using detail::child_object;
+    using detail::json_int;
+    using detail::json_string;
+    using detail::json_strings;
+
     FileReport report;
     if (!root.is_object())
         return report;

@@ -68,6 +68,7 @@ add_library(vtapi
   src/http.cpp
   src/response.cpp
   src/file_report.cpp
+  src/scan_result.cpp
   src/client.cpp
 )
 add_library(vtapi::vtapi ALIAS vtapi)
