@@ -2,18 +2,29 @@
 
 namespace {
 
-uint64_t json_uint64(const nlohmann::json& object, const char* key) {
-    const auto it = object.find(key);
-    if (it == object.end() || !it->is_number_unsigned())
-        return 0;
-    return it->get<uint64_t>();
-}
-
 std::string json_string(const nlohmann::json& object, const char* key) {
     const auto it = object.find(key);
     if (it == object.end() || !it->is_string())
         return {};
     return it->get<std::string>();
+}
+
+int64_t json_int(const nlohmann::json& object, const char* key) {
+    const auto it = object.find(key);
+    if (it == object.end() || !it->is_number_integer())
+        return 0;
+    return it->get<int64_t>();
+}
+
+std::vector<std::string> json_strings(const nlohmann::json& object, const char* key) {
+    std::vector<std::string> out;
+    const auto it = object.find(key);
+    if (it == object.end() || !it->is_array())
+        return out;
+    for (const auto& element : *it)
+        if (element.is_string())
+            out.push_back(element.get<std::string>());
+    return out;
 }
 
 } // namespace
@@ -29,7 +40,12 @@ FileReport file_report_from_json(const nlohmann::json& root) {
     if (data == root.end() || !data->is_object())
         return report;
 
+    report.type = json_string(*data, "type");
     report.id = json_string(*data, "id");
+
+    if (const auto links = data->find("links");
+        links != data->end() && links->is_object())
+        report.self_link = json_string(*links, "self");
 
     const auto attrs = data->find("attributes");
     if (attrs == data->end() || !attrs->is_object())
@@ -39,45 +55,46 @@ FileReport file_report_from_json(const nlohmann::json& root) {
     report.sha256 = json_string(a, "sha256");
     report.sha1 = json_string(a, "sha1");
     report.md5 = json_string(a, "md5");
-
-    const auto size = a.find("size");
-    if (size != a.end() && size->is_number_unsigned())
-        report.size = size->get<uint64_t>();
-
+    report.size = json_int(a, "size");
     report.type_description = json_string(a, "type_description");
+    report.magic = json_string(a, "magic");
+    report.tlsh = json_string(a, "tlsh");
+    report.meaningful_name = json_string(a, "meaningful_name");
+    report.names = json_strings(a, "names");
+    report.type_tags = json_strings(a, "type_tags");
 
-    if (const auto names = a.find("names"); names != a.end() && names->is_array()) {
-        for (const auto& name : *names)
-            if (name.is_string())
-                report.names.push_back(name.get<std::string>());
-    }
-
-    const auto last_date = a.find("last_analysis_date");
-    if (last_date != a.end() && last_date->is_number_integer())
-        report.last_analysis_date = last_date->get<int64_t>();
+    report.creation_date = json_int(a, "creation_date");
+    report.first_submission_date = json_int(a, "first_submission_date");
+    report.last_submission_date = json_int(a, "last_submission_date");
+    report.last_analysis_date = json_int(a, "last_analysis_date");
+    report.last_modification_date = json_int(a, "last_modification_date");
+    report.times_submitted = static_cast<int>(json_int(a, "times_submitted"));
+    report.reputation = static_cast<int>(json_int(a, "reputation"));
 
     if (const auto stats = a.find("last_analysis_stats");
         stats != a.end() && stats->is_object()) {
-        report.stats.harmless = json_uint64(*stats, "harmless");
-        report.stats.malicious = json_uint64(*stats, "malicious");
-        report.stats.suspicious = json_uint64(*stats, "suspicious");
-        report.stats.timeout = json_uint64(*stats, "timeout");
-        report.stats.undetected = json_uint64(*stats, "undetected");
-        report.stats.type_unsupported = json_uint64(*stats, "type-unsupported");
+        report.last_analysis_stats.harmless = json_int(*stats, "harmless");
+        report.last_analysis_stats.malicious = json_int(*stats, "malicious");
+        report.last_analysis_stats.suspicious = json_int(*stats, "suspicious");
+        report.last_analysis_stats.timeout = json_int(*stats, "timeout");
+        report.last_analysis_stats.undetected = json_int(*stats, "undetected");
+        report.last_analysis_stats.type_unsupported = json_int(*stats, "type-unsupported");
     }
 
+    // Verdicts are keyed by engine name, mirroring the JSON object structure.
     if (const auto results = a.find("last_analysis_results");
         results != a.end() && results->is_object()) {
         for (auto it = results->begin(); it != results->end(); ++it) {
             if (!it.value().is_object())
                 continue;
             const nlohmann::json& e = it.value();
-            EngineResult engine;
-            engine.category = json_string(e, "category");
-            engine.engine_name = json_string(e, "engine_name");
-            engine.engine_version = json_string(e, "engine_version");
-            engine.result = json_string(e, "result");
-            report.last_analysis_results[it.key()] = std::move(engine);
+            AnalysisResult verdict;
+            verdict.category = json_string(e, "category");
+            verdict.result = json_string(e, "result");
+            verdict.engine_name = json_string(e, "engine_name");
+            verdict.engine_update = json_string(e, "engine_update");
+            verdict.engine_version = json_string(e, "engine_version");
+            report.last_analysis_results[it.key()] = std::move(verdict);
         }
     }
 

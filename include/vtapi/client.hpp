@@ -31,6 +31,9 @@ public:
     // hex id (md5/sha1/sha256). If VT has never seen the file → NotFound.
     FileReport get_file_report(const std::string& hash);
 
+    // Public virustotal.com analysis-page link for a file hash (no HTTP call).
+    std::string get_public_file_scan_link(const std::string& hash);
+
 private:
     detail::HttpClient http_;
     std::string api_key_;

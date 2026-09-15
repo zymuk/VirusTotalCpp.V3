@@ -45,4 +45,10 @@ FileReport VirusTotal::get_file_report(const std::string& hash) {
     return file_report_from_json(detail::json_or_throw(resp));
 }
 
+std::string VirusTotal::get_public_file_scan_link(const std::string& hash) {
+    if (!is_hex_hash(hash))
+        throw VtError("invalid hash: expected 32/40/64 hex characters");
+    return "https://www.virustotal.com/gui/file/" + hash + "/detection";
+}
+
 } // namespace vtapi

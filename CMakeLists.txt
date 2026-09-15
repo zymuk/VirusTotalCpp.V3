@@ -1,6 +1,15 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(vtapi VERSION 0.2.0 DESCRIPTION "C++17 VirusTotal API v3 client" LANGUAGES C CXX)
+# The version is read from include/vtapi/version.hpp (single source of truth),
+# so bump the header only. The description is fixed metadata, kept inline.
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/include/vtapi/version.hpp" _vtapi_version_header)
+if (_vtapi_version_header MATCHES "kVersion[ \t]*=[ \t]*\"([0-9]+\\.[0-9]+\\.[0-9]+)")
+  set(VTAPI_VERSION "${CMAKE_MATCH_1}")
+else()
+  message(FATAL_ERROR "Could not extract the version from include/vtapi/version.hpp")
+endif()
+project(vtapi VERSION ${VTAPI_VERSION}
+        DESCRIPTION "C++17 VirusTotal API v3 client" LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
