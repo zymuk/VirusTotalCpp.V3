@@ -84,6 +84,16 @@ int main(int argc, char** argv) {
         return 2;
     }
 
+    if (opts.api_key.empty()) {
+        if (const char* env = std::getenv("VIRUSTOTAL_API_KEY"))
+            opts.api_key = env;
+    }
+
+    if (opts.command != "version" && opts.api_key.empty()) {
+        std::cerr << "error: API key required (--key or $VIRUSTOTAL_API_KEY)\n";
+        return 2;
+    }
+
     if (opts.command == "version") {
         std::cout << vtapi::version_string() << "\n";
         return 0;
