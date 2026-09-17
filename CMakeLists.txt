@@ -117,8 +117,12 @@ if(VTAPI_BUILD_TESTS)
   enable_testing()
   add_executable(vtapi_tests tests/run_tests.cpp)
   target_link_libraries(vtapi_tests PRIVATE vtapi)
-  target_compile_definitions(vtapi_tests PRIVATE
-    VTAPI_EICAR_BIN="$<TARGET_FILE:vtapi_eicar>")
+  # The tests that spawn the CLI use fork/exec and are POSIX only, so the path
+  # is only needed (and only defined) off Windows.
+  if(NOT WIN32)
+    target_compile_definitions(vtapi_tests PRIVATE
+      VTAPI_EICAR_BIN="$<TARGET_FILE:vtapi_eicar>")
+  endif()
   add_test(NAME vtapi_tests COMMAND vtapi_tests)
 endif()
 

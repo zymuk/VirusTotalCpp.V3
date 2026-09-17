@@ -1,8 +1,12 @@
 // Micro test harness. No external framework: one binary grows test-by-test as
 // endpoint steps land. Run via `ctest --test-dir build`.
 
+#ifndef _WIN32
+// The CLI tests spawn the built binary and capture its streams, which uses
+// fork/exec/pipe; that part is POSIX only.
 #include <sys/wait.h>
 #include <unistd.h>
+#endif
 
 #include <chrono>
 #include <filesystem>
@@ -217,19 +221,7 @@ void test_http_client() {
     CHECK(uploaded.body == "uploaded");
 
     // Connecting to a port with no listener must raise NetworkError.
-    const int dead_port = [] {
-        const int s = socket(AF_INET, SOCK_STREAM, 0);
-        sockaddr_in a{};
-        a.sin_family = AF_INET;
-        a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-        a.sin_port = 0;
-        bind(s, reinterpret_cast<sockaddr*>(&a), sizeof(a));
-        socklen_t len = sizeof(a);
-        getsockname(s, reinterpret_cast<sockaddr*>(&a), &len);
-        const int port = ntohs(a.sin_port);
-        close(s);
-        return port;
-    }();
+    const int dead_port = mock::unused_local_port();
     vtapi::detail::HttpClient dead_client;
     dead_client.set_connect_timeout(std::chrono::seconds(1));
     CHECK_THROWS_AS(
@@ -720,6 +712,7 @@ void test_check_then_scan_round_trip() {
 }
 
 // stdout, stderr and exit status of a spawned vtapi_eicar invocation.
+#ifndef _WIN32
 struct CliOutcome {
     std::string out;
     std::string err;
@@ -981,6 +974,7 @@ void test_cli_check_then_scan() {
 
     std::filesystem::remove_all(temp);
 }
+#endif // !_WIN32
 
 } // namespace
 
@@ -997,9 +991,11 @@ int main() {
     test_scan_file_path();
     test_check_then_scan_round_trip();
     test_public_scan_link();
+#ifndef _WIN32
     test_cli_report();
     test_cli_scan_file();
     test_cli_check_then_scan();
+#endif
 
     if (g_failures) {
         std::cerr << g_failures << " of " << g_checks << " checks failed\n";

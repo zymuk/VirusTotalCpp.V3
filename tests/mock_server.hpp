@@ -3,11 +3,6 @@
 // answers with the handler's response. No external dependencies beyond sockets.
 #pragma once
 
-#include <arpa/inet.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <unistd.h>
-
 #include <atomic>
 #include <functional>
 #include <map>
@@ -16,7 +11,84 @@
 #include <thread>
 #include <vector>
 
+#ifdef _WIN32
+  #ifndef WIN32_LEAN_AND_MEAN
+  #define WIN32_LEAN_AND_MEAN
+  #endif
+  #ifndef NOMINMAX
+  #define NOMINMAX
+  #endif
+  #include <winsock2.h>
+  #include <ws2tcpip.h>
+  #if defined(_MSC_VER)
+  #pragma comment(lib, "ws2_32.lib")
+  #endif
+#else
+  #include <arpa/inet.h>
+  #include <netinet/in.h>
+  #include <sys/socket.h>
+  #include <unistd.h>
+#endif
+
+// MSVC's WinSock headers use `int` where POSIX uses `socklen_t`; MinGW already
+// provides the typedef, so only define it for the Microsoft toolchain.
+#if defined(_MSC_VER)
+using socklen_t = int;
+#endif
+
 #include "vtapi/detail/http.hpp"
+
+// Thin socket shim: the mock server must compile with both POSIX sockets and
+// WinSock (MSVC has no ssize_t and needs WSAStartup).
+namespace mock {
+namespace platform {
+
+#ifdef _WIN32
+using socket_t = SOCKET;
+inline const socket_t kInvalidSocket = INVALID_SOCKET;
+inline void close_socket(socket_t s) { closesocket(s); }
+inline void shutdown_socket(socket_t s) { shutdown(s, SD_BOTH); }
+inline void ensure_initialized() {
+    static struct WinsockInit {
+        WinsockInit() {
+            WSADATA data;
+            if (WSAStartup(MAKEWORD(2, 2), &data) != 0)
+                throw std::runtime_error("mock server: WSAStartup failed");
+        }
+        ~WinsockInit() { WSACleanup(); }
+    } init;
+    (void)init;
+}
+#else
+using socket_t = int;
+inline const socket_t kInvalidSocket = -1;
+inline void close_socket(socket_t s) { ::close(s); }
+inline void shutdown_socket(socket_t s) { ::shutdown(s, SHUT_RDWR); }
+inline void ensure_initialized() {}
+#endif
+
+} // namespace platform
+
+// Opens a loopback socket with no listener and returns the port it held. Used
+// by tests that assert a connection refused error.
+inline int unused_local_port() {
+    platform::ensure_initialized();
+    const platform::socket_t s = socket(AF_INET, SOCK_STREAM, 0);
+    if (s == platform::kInvalidSocket)
+        return 0;
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = 0;
+    bind(s, reinterpret_cast<sockaddr*>(&addr), static_cast<int>(sizeof(addr)));
+    socklen_t len = static_cast<socklen_t>(sizeof(addr));
+    getsockname(s, reinterpret_cast<sockaddr*>(&addr), &len);
+    const int port = ntohs(addr.sin_port);
+    platform::close_socket(s);
+    return port;
+}
+
+} // namespace mock
 
 struct MockRequest {
     std::string method;
@@ -123,8 +195,8 @@ public:
 
     explicit MockServer(Handler handler)
         : handler_(std::move(handler)),
-          fd_(socket(AF_INET, SOCK_STREAM, 0)) {
-        if (fd_ < 0)
+          fd_(open_listener()) {
+        if (fd_ == mock::platform::kInvalidSocket)
             throw std::runtime_error("mock server: socket() failed");
 
         sockaddr_in addr{};
@@ -132,14 +204,18 @@ public:
         addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
         addr.sin_port = htons(0);
         const int one = 1;
-        setsockopt(fd_, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
-        if (bind(fd_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0 ||
+        setsockopt(fd_, SOL_SOCKET, SO_REUSEADDR,
+                   reinterpret_cast<const char*>(&one),
+                   static_cast<int>(sizeof(one)));
+        if (bind(fd_, reinterpret_cast<sockaddr*>(&addr),
+                 static_cast<int>(sizeof(addr))) != 0 ||
             listen(fd_, 16) != 0) {
-            close(fd_);
+            mock::platform::close_socket(fd_);
+            fd_ = mock::platform::kInvalidSocket;
             throw std::runtime_error("mock server: bind/listen failed");
         }
 
-        socklen_t len = sizeof(addr);
+        socklen_t len = static_cast<socklen_t>(sizeof(addr));
         getsockname(fd_, reinterpret_cast<sockaddr*>(&addr), &len);
         port_ = ntohs(addr.sin_port);
 
@@ -160,35 +236,40 @@ public:
     }
 
 private:
+    static mock::platform::socket_t open_listener() {
+        mock::platform::ensure_initialized();
+        return socket(AF_INET, SOCK_STREAM, 0);
+    }
+
     void stop() {
         if (!running_)
             return;
         running_ = false;
-        shutdown(fd_, SHUT_RDWR);
-        close(fd_);
+        mock::platform::shutdown_socket(fd_);
+        mock::platform::close_socket(fd_);
         if (thread_.joinable())
             thread_.join();
     }
 
     void serve() {
         while (running_) {
-            const int client = accept(fd_, nullptr, nullptr);
-            if (client < 0) {
+            const mock::platform::socket_t client = accept(fd_, nullptr, nullptr);
+            if (client == mock::platform::kInvalidSocket) {
                 if (running_)
                     continue;
                 break;
             }
             handle_client(client);
-            close(client);
+            mock::platform::close_socket(client);
         }
     }
 
-    void handle_client(int client) {
+    void handle_client(mock::platform::socket_t client) {
         std::string raw;
         char buf[4096];
         std::size_t header_end = std::string::npos;
         while (header_end == std::string::npos) {
-            const ssize_t n = recv(client, buf, sizeof(buf), 0);
+            const int n = recv(client, buf, static_cast<int>(sizeof(buf)), 0);
             if (n <= 0)
                 return;
             raw.append(buf, static_cast<std::size_t>(n));
@@ -229,7 +310,7 @@ private:
             }
         }
         while (raw.size() < header_end + 4 + content_length) {
-            const ssize_t n = recv(client, buf, sizeof(buf), 0);
+            const int n = recv(client, buf, static_cast<int>(sizeof(buf)), 0);
             if (n <= 0)
                 return;
             raw.append(buf, static_cast<std::size_t>(n));
@@ -253,7 +334,7 @@ private:
         send_response(client, out);
     }
 
-    void send_response(int client, const MockResponse& resp) {
+    void send_response(mock::platform::socket_t client, const MockResponse& resp) {
         const std::string head =
             "HTTP/1.1 " + std::to_string(resp.status) + " " +
             mock::status_reason(resp.status) + "\r\n" +
@@ -261,15 +342,15 @@ private:
             "Content-Length: " + std::to_string(resp.body.size()) + "\r\n" +
             "Connection: close\r\n\r\n";
         const std::string payload = head + resp.body;
-        send(client, payload.data(), payload.size(), 0);
+        send(client, payload.data(), static_cast<int>(payload.size()), 0);
     }
 
-    void send_error(int client, int status) {
+    void send_error(mock::platform::socket_t client, int status) {
         send_response(client, {status, "mock server error"});
     }
 
     Handler handler_;
-    int fd_ = -1;
+    mock::platform::socket_t fd_ = mock::platform::kInvalidSocket;
     int port_ = 0;
     std::atomic<bool> running_{true};
     std::thread thread_;
