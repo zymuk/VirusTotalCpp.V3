@@ -96,6 +96,8 @@ target_link_libraries(vtapi_eicar PRIVATE vtapi)
 enable_testing()
 add_executable(vtapi_tests tests/run_tests.cpp)
 target_link_libraries(vtapi_tests PRIVATE vtapi)
+target_compile_definitions(vtapi_tests PRIVATE
+  VTAPI_EICAR_BIN="$<TARGET_FILE:vtapi_eicar>")
 add_test(NAME vtapi_tests COMMAND vtapi_tests)
 
 # ---------------------------------------------------------------------------
