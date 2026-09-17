@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: ubuntu-gcc
+            os: ubuntu-latest
+          - name: ubuntu-clang
+            os: ubuntu-latest
+            clang: true
+          - name: macos
+            os: macos-latest
+          - name: windows
+            os: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ninja-build libssl-dev zlib1g-dev
+
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ninja openssl zlib
+
+      - name: Install dependencies (Windows)
+        if: runner.os == 'Windows'
+        run: vcpkg install openssl
+
+      - name: Configure (Linux)
+        if: runner.os == 'Linux'
+        run: >
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_C_COMPILER=${{ matrix.clang && 'clang' || 'gcc' }}
+          -DCMAKE_CXX_COMPILER=${{ matrix.clang && 'clang++' || 'g++' }}
+
+      - name: Configure (macOS)
+        if: runner.os == 'macOS'
+        env:
+          OPENSSL_ROOT_DIR: ${{ runner.arch == 'ARM64' && '/opt/homebrew/opt/openssl' || '/usr/local/opt/openssl' }}
+          CMAKE_PREFIX_PATH: ${{ runner.arch == 'ARM64' && '/opt/homebrew/opt/zlib' || '/usr/local/opt/zlib' }}
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Configure (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: >
+          cmake -S . -B build -A x64
+          -DCMAKE_TOOLCHAIN_FILE="$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Upload binaries
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vtapi-binaries-${{ matrix.name }}
+          if-no-files-found: warn
+          path: |
+            build/vtapi_eicar
+            build/vtapi_eicar.exe
+            build/libvtapi.a
+            build/Release/vtapi_eicar.exe
+            build/Release/vtapi.lib

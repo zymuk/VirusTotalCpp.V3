@@ -1,0 +1,20 @@
+{
+  "name": "vtapi",
+  "version": "1.0.0",
+  "description": "C++17 client library for the VirusTotal API v3",
+  "homepage": "https://github.com/zymuk/VirusTotalCpp.V3",
+  "documentation": "https://github.com/zymuk/VirusTotalCpp.V3#readme",
+  "license": "MIT",
+  "dependencies": [
+    "curl",
+    "openssl",
+    {
+      "name": "vcpkg-cmake",
+      "host": true
+    },
+    {
+      "name": "vcpkg-cmake-config",
+      "host": true
+    }
+  ]
+}

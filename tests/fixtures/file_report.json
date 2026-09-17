@@ -1,0 +1,51 @@
+{
+  "data": {
+    "type": "file",
+    "id": "275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f",
+    "attributes": {
+      "tlsh": "T1A6D0217D4B4B5BD3E24DE3B7E5EA4B42F4A66D6C9F0B0BBD5E6D6C5A5A5B5C5",
+      "vhash": "7c46ecac60059810f29c62aa9f3ae1ee",
+      "meaningful_name": "eicar.com",
+      "creation_date": 1653654377,
+      "type_tags": ["text"],
+      "first_submission_date": 1653654377,
+      "last_submission_date": 1653654377,
+      "last_analysis_date": 1653654377,
+      "last_analysis_stats": {
+        "harmless": 0,
+        "malicious": 64,
+        "suspicious": 0,
+        "timeout": 0,
+        "undetected": 0,
+        "type-unsupported": 0
+      },
+      "times_submitted": 1,
+      "reputation": 0,
+      "last_analysis_results": {
+        "Acronis": {
+          "category": "malicious",
+          "engine_name": "Acronis",
+          "engine_version": "1.0",
+          "result": "EICAR-Test-File"
+        },
+        "Bkav": {
+          "category": "undetected",
+          "engine_name": "Bkav",
+          "engine_version": "1.0",
+          "result": null
+        }
+      },
+      "last_modification_date": 1653654377,
+      "magic": "ASCII text, with CRLF line terminators",
+      "type_description": "Text",
+      "sha256": "275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f",
+      "sha1": "3395856ce81f2b7382dee72602f798b642f14140",
+      "md5": "44d88612fea8a8f36de82e1278abb02f",
+      "size": 68,
+      "names": ["eicar.com"]
+    },
+    "links": {
+      "self": "https://www.virustotal.com/api/v3/files/275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f"
+    }
+  }
+}

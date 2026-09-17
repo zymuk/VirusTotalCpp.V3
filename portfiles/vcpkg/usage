@@ -1,0 +1,4 @@
+The library provides CMake config package targets:
+
+    find_package(vtapi CONFIG REQUIRED)
+    target_link_libraries(main PRIVATE vtapi::vtapi)
