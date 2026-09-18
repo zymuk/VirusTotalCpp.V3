@@ -589,6 +589,89 @@ void test_scan_file() {
     CHECK(!server_hit);
 }
 
+void test_scan_large_file() {
+    const std::string kKey(64, 'a');
+    const std::vector<uint8_t> eicar = [] {
+        const std::string bytes =
+            "X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*";
+        return std::vector<uint8_t>(bytes.begin(), bytes.end());
+    }();
+
+    auto options = [&](const std::string& base_url) {
+        vtapi::ClientOptions opt;
+        opt.api_key = kKey;
+        opt.base_url = base_url;
+        opt.verify_ssl = false;
+        opt.timeout = std::chrono::seconds(5);
+        opt.requests_per_minute = 0.0;
+        return opt;
+    };
+
+    // Two-step flow: GET /files/upload_url returns a one-time upload URL, then
+    // the file is POSTed to that exact URL (different path than /files) using
+    // the normal multipart shape — no privileged key is involved anywhere.
+    const std::string kUploadUrlGhost = "/upload_target";
+    const std::string kAnalysisId617 =
+        "u-275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f-1680798089";
+
+    MockServer flow_server([&](const MockRequest& req) -> MockResponse {
+        if (req.method == "GET" && req.path == "/files/upload_url") {
+            return {200,
+                    R"({"data":")" + std::string(kUploadUrlGhost) + R"("})",
+                    "application/json"};
+        }
+        if (req.method == "POST" && req.path == "/upload_target") {
+            const auto key = req.headers.find("x-apikey");
+            if (key == req.headers.end() || key->second != kKey)
+                return {403, "bad key"};
+            const auto pw = req.form_fields.find("password");
+            if (pw == req.form_fields.end() || pw->second != "p@ss")
+                return {400, "bad password"};
+            if (req.files.size() != 1 || req.files[0].field != "file" ||
+                req.files[0].filename != "eicar.bin" ||
+                std::string(req.files[0].data.begin(), req.files[0].data.end()) !=
+                    std::string(eicar.begin(), eicar.end()))
+                return {400, "bad file part"};
+            return {200, load_fixture("scan_result.json"), "application/json"};
+        }
+        return {404, "unexpected request"};
+    });
+    vtapi::VirusTotal vt{options(flow_server.url(""))};
+    const vtapi::ScanResult result =
+        vt.scan_large_file(eicar, "eicar.bin", "p@ss");
+    CHECK(result.id == kAnalysisId617);
+
+    // Missing file → VtError before any request (server never sees it).
+    bool miss_hit = false;
+    MockServer miss_server([&miss_hit](const MockRequest&) -> MockResponse {
+        miss_hit = true;
+        return {200, "{}"};
+    });
+    vtapi::VirusTotal miss{options(miss_server.url(""))};
+    bool missing = false;
+    try {
+        miss.scan_large_file("/nonexistent/nope.bin");
+    } catch (const vtapi::VtError&) {
+        missing = true;
+    }
+    CHECK(missing);
+    CHECK(!miss_hit);
+
+    // Password-empty file with no password: no password field, still two-step.
+    MockServer no_pw_server([](const MockRequest& req) -> MockResponse {
+        if (req.method == "POST" && req.path == "/upload_target") {
+            if (req.form_fields.find("password") != req.form_fields.end())
+                return {400, "unexpected password"};
+            return {200, load_fixture("scan_result.json"), "application/json"};
+        }
+        if (req.method == "GET")
+            return {200, R"({"data":"/upload_target"})", "application/json"};
+        return {404, "no"};
+    });
+    vtapi::VirusTotal no_pw{options(no_pw_server.url(""))};
+    CHECK(no_pw.scan_large_file(eicar, "plain.bin").id == kAnalysisId617);
+}
+
 void test_scan_file_path() {
     const std::string kKey(64, 'a');
 
@@ -989,6 +1072,7 @@ int main() {
     test_get_file_report();
     test_scan_file();
     test_scan_file_path();
+    test_scan_large_file();
     test_check_then_scan_round_trip();
     test_public_scan_link();
 #ifndef _WIN32

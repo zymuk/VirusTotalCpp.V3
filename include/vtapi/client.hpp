@@ -40,8 +40,8 @@ public:
 
     // Submits a file for scanning and returns the queued analysis. filename is
     // sent to VT; password (optional) protects the scan with a password. Files
-    // larger than kFileSizeLimit throw VtError — use scan_large_file (premium)
-    // for anything bigger.
+    // larger than kFileSizeLimit throw VtError — use scan_large_file for
+    // anything bigger.
     ScanResult scan_file(std::vector<uint8_t> data, std::string filename,
                          std::optional<std::string> password = {});
 
@@ -51,9 +51,25 @@ public:
     ScanResult scan_file(const std::string& path,
                          std::optional<std::string> password = {});
 
-    // v3's scan_file accepts at most 32 MB - 1063 bytes (premium keys can go
-    // beyond via the two-step scan_large_file flow).
+    // v3's scan_file accepts at most 32 MB - 1063 bytes; larger files go
+    // through the two-step scan_large_file flow instead (no privileged key
+    // required by the /files/upload_url endpoint).
     static constexpr int64_t kFileSizeLimit = 33553369;
+
+    // Submits a file larger than kFileSizeLimit (up to kLargeFileSizeLimit)
+    // using the two-step flow: GET /files/upload_url, then POST the file to the
+    // returned upload URL. Same effective shape as scan_file (password optional).
+    ScanResult scan_large_file(std::vector<uint8_t> data, std::string filename,
+                               std::optional<std::string> password = {});
+
+    // Reads the file at path into memory, gates the size up front, then
+    // delegates to the data overload. Missing or oversized files throw VtError
+    // before any request is made.
+    ScanResult scan_large_file(const std::string& path,
+                               std::optional<std::string> password = {});
+
+    // VirusTotal's two-step upload accepts files up to 650 MB.
+    static constexpr int64_t kLargeFileSizeLimit = 650LL * 1024 * 1024;
 
 private:
     detail::HttpClient http_;
