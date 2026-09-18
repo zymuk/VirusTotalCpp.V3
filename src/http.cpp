@@ -153,6 +153,10 @@ HttpResponse HttpClient::post_multipart(
     CURL* handle = static_cast<CURL*>(curl_);
     apply_common_options(handle, url);
 
+    // VirusTotal big-file host (bigfiles.virustotal.com) resets HTTP/2 streams
+    // mid-multipart; pin HTTP/1.1 for these uploads.
+    curl_easy_setopt(handle, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
+
     curl_mime* mime = curl_mime_init(handle);
     for (const auto& field : fields) {
         curl_mimepart* part = curl_mime_addpart(mime);

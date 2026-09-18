@@ -32,7 +32,8 @@ void print_usage(std::ostream& out) {
            "Commands:\n"
            "  version                     print the library version\n"
            "  report --hash <hash>        report whether a file was scanned\n"
-           "  scan-file --path <file> [--password <pw>]  upload a file for scanning\n"
+            "  scan-file --path <file> [--password <pw>]  upload a file for scanning\n"
+            "  scan-large-file --path <file> [--password <pw>]  two-step upload for large files\n"
            "\n"
            "Options:\n"
            "  --key <key>                 API key (falls back to $VIRUSTOTAL_API_KEY)\n"
@@ -215,6 +216,52 @@ int run_scan_file(const std::vector<std::string>& args, const CliOptions& opts) 
     }
 }
 
+// `scan-large-file --path <file> [--password <pw>]` — same shape as scan-file
+// but routes through the two-step upload (ask for an upload URL, then POST the
+// file to that URL) so it supports files up to 650 MB.
+int run_scan_large_file(const std::vector<std::string>& args, const CliOptions& opts) {
+    std::string path;
+    std::optional<std::string> password;
+    for (std::size_t i = 0; i < args.size(); ++i) {
+        if (args[i] == "--path" && i + 1 < args.size()) {
+            path = args[++i];
+        } else if (args[i] == "--password" && i + 1 < args.size()) {
+            password = args[++i];
+        } else {
+            std::cerr << "error: scan-large-file: expected --path <file> [--password <pw>]\n";
+            print_usage(std::cerr);
+            return 2;
+        }
+    }
+    if (path.empty()) {
+        std::cerr << "error: scan-large-file: missing --path <file>\n";
+        print_usage(std::cerr);
+        return 2;
+    }
+
+    try {
+        vtapi::VirusTotal vt{to_client_options(opts)};
+        const vtapi::ScanResult result = vt.scan_large_file(path, password);
+
+        // Hash locally so the follow-up lookup never depends on the server
+        // echoing file_info back.
+        std::string bytes;
+        if (!read_file(path, bytes)) {
+            std::cerr << "error: cannot read file: " << path << "\n";
+            return 1;
+        }
+        const std::string sha256 = vtapi::detail::sha256_hex(bytes);
+
+        std::cout << "Uploaded (two-step upload). analysis id: " << result.id << "\n";
+        std::cout << "sha256: " << sha256 << "\n";
+        std::cout << "Run: vtapi_eicar report --hash " << sha256 << "\n";
+        return 0;
+    } catch (const vtapi::VtError& e) {
+        std::cerr << "error: " << e.what() << "\n";
+        return 1;
+    }
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -241,6 +288,9 @@ int main(int argc, char** argv) {
 
     if (opts.command == "report")
         return run_report(opts.args, opts);
+
+    if (opts.command == "scan-large-file")
+        return run_scan_large_file(opts.args, opts);
 
     if (opts.command == "scan-file")
         return run_scan_file(opts.args, opts);

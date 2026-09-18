@@ -103,7 +103,7 @@ ScanResult VirusTotal::scan_large_file(std::vector<uint8_t> data,
         http_.get(base_url_ + "/files/upload_url");
     std::string upload_url =
         upload_url_from_json(detail::json_or_throw(url_resp));
-    if (upload_url.rfind("://", 0) == std::string::npos) {
+    if (upload_url.find("://") == std::string::npos) {
         upload_url = (upload_url.empty() || upload_url[0] != '/')
                          ? base_url_ + "/" + upload_url
                          : base_url_ + upload_url;

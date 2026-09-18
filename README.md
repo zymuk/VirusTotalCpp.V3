@@ -111,6 +111,15 @@ vtapi_eicar scan-file --path eicar.com   # Uploaded. analysis id: ...
 vtapi_eicar report --hash "$SHA256"      # Seen before: Yes (once scanning completes)
 ```
 
+Files too large for the direct upload (up to 32 MB) go through the two-step
+flow instead — VirusTotal first returns a signed `upload_url`, then you POST
+the file to it:
+
+```sh
+vtapi_eicar scan-large-file --path big.bin  # Uploaded (two-step). analysis id: ...
+vtapi_eicar report --hash "$SHA256"          # Seen before: Yes
+```
+
 Options (before the command): `--key <key>`, `--base-url <url>`,
 `--timeout <seconds>`, `--no-verify-ssl`, `--rpm <n>`. Running the CLI with no
 arguments prints the usage. Exit codes: `0` success, `1` runtime error,
