@@ -1,0 +1,44 @@
+{
+  "data": {
+    "type": "file_behaviour",
+    "id": "275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f_VirusTotal Jujubox",
+    "links": {
+      "self": "https://www.virustotal.com/api/v3/file_behaviours/275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f_VirusTotal Jujubox"
+    },
+    "attributes": {
+      "sandbox_name": "VirusTotal Jujubox",
+      "analysis_date": 1669409515,
+      "last_modification_date": 1669409615,
+      "behash": "62c2064909c818e0914b1df00b8b82dc79c47684",
+      "verdicts": [
+        "UNKNOWN_VERDICT"
+      ],
+      "tags": [
+        "eicar"
+      ],
+      "has_html_report": false,
+      "has_pcap": true,
+      "mitre_attack_techniques": [
+        {
+          "id": "T1082",
+          "signature_description": "Reads software policies"
+        }
+      ],
+      "signature_matches": [
+        {
+          "id": "capa-det",
+          "name": "detect-eicar",
+          "description": "Description of the rule",
+          "format": "SIG_FORMAT_CAPA",
+          "rule_src": "https://example.com/rules",
+          "authors": [
+            "VirusTotal"
+          ],
+          "match_data": [
+            "fu0: $a at 0x1000"
+          ]
+        }
+      ]
+    }
+  }
+}

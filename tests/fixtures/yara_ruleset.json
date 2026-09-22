@@ -1,0 +1,14 @@
+{
+  "data": {
+    "type": "yara_ruleset",
+    "id": "000abc43",
+    "links": {
+      "self": "https://www.virustotal.com/api/v3/yara_rulesets/000abc43"
+    },
+    "attributes": {
+      "name": "evilness",
+      "rules": "rule evilness {\n  strings:\n    $s1 = \"evil\" ascii\n  condition:\n    $s1\n}\n",
+      "source": "https://github.com/VirusTotal/yara/blob/master/evilness.yar"
+    }
+  }
+}

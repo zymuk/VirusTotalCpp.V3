@@ -1,0 +1,67 @@
+{
+  "data": {
+    "Zenbox": {
+      "tactics": [
+        {
+          "id": "TA0007",
+          "name": "Discovery",
+          "description": "The adversary is trying to figure out your environment.",
+          "link": "https://attack.mitre.org/tactics/TA0007/",
+          "techniques": [
+            {
+              "id": "T1082",
+              "name": "System Information Discovery",
+              "description": "An adversary may attempt to get detailed information about the operating system and hardware, Windows API calls, network configuration and settings.",
+              "link": "https://attack.mitre.org/techniques/T1082/",
+              "signatures": [
+                {
+                  "severity": "INFO",
+                  "description": "Reads software policies"
+                },
+                {
+                  "severity": "MEDIUM",
+                  "description": "Collects system information"
+                }
+              ]
+            },
+            {
+              "id": "T1057",
+              "name": "Process Discovery",
+              "description": "An adversary may attempt to get information about running processes on a system.",
+              "link": "https://attack.mitre.org/techniques/T1057/",
+              "signatures": [
+                {
+                  "severity": "LOW",
+                  "description": "Lists running processes"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "TA0002",
+          "name": "Execution",
+          "description": "The adversary is trying to run malicious code.",
+          "link": "https://attack.mitre.org/tactics/TA0002/",
+          "techniques": [
+            {
+              "id": "T1059",
+              "name": "Command and Scripting Interpreter",
+              "description": "An adversary may abuse command and script interpreters to execute commands, scripts, or binaries.",
+              "link": "https://attack.mitre.org/techniques/T1059/",
+              "signatures": [
+                {
+                  "severity": "HIGH",
+                  "description": "Executes shell commands"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "VirusTotal Jujubox": {
+      "tactics": []
+    }
+  }
+}

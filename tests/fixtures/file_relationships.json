@@ -1,0 +1,11 @@
+{
+  "meta": {"count": 2},
+  "data": [
+    {"type": "file", "id": "3395856ce81f2b7382dee72602f798b642f14140", "attributes": {"names": ["sample.bin"]}},
+    {"type": "file", "id": "275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f", "attributes": {"names": ["eicar.com"]}}
+  ],
+  "links": {
+    "self": "https://www.virustotal.com/api/v3/files/275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f/relationships/communicating_files",
+    "next": "https://www.virustotal.com/api/v3/files/275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f/relationships/communicating_files?cursor=next"
+  }
+}

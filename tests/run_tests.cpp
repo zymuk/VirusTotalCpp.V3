@@ -23,8 +23,14 @@
 #include "vtapi/detail/http.hpp"
 #include "vtapi/detail/ratelimit.hpp"
 #include "vtapi/detail/response.hpp"
+#include "vtapi/detail/url.hpp"
+#include "vtapi/model/behaviour.hpp"
 #include "vtapi/model/file_report.hpp"
+#include "vtapi/model/mitre.hpp"
+#include "vtapi/model/relationship.hpp"
 #include "vtapi/model/scan_result.hpp"
+#include "vtapi/model/sigma_rule.hpp"
+#include "vtapi/model/yara_ruleset.hpp"
 #include "vtapi/types.hpp"
 
 namespace {
@@ -740,6 +746,751 @@ void test_scan_file_path() {
     std::filesystem::remove_all(temp);
 }
 
+void test_get_file_download_url() {
+    const std::string kKey(64, 'a');
+    const std::string kSha256 =
+        "275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f";
+    const std::string kSignedUrl =
+        "https://vtsamples.commondatastorage.googleapis.com/275a0..fd0f?"
+        "GoogleAccessId=vt&Expires=1524733537&Signature=abc";
+
+    vtapi::ClientOptions opt;
+    opt.api_key = kKey;
+    opt.verify_ssl = false;
+    opt.timeout = std::chrono::seconds(5);
+    opt.requests_per_minute = 0.0;
+
+    const auto with_url = [&](const std::string& url) {
+        vtapi::ClientOptions o = opt;
+        o.base_url = url;
+        return o;
+    };
+
+    // 200 → the signed URL from data; api key header is sent.
+    MockServer ok_server([&](const MockRequest& req) -> MockResponse {
+        const auto key = req.headers.find("x-apikey");
+        if (key == req.headers.end() || key->second != kKey)
+            return {403, "bad key"};
+        if (req.path != "/files/" + kSha256 + "/download_url")
+            return {404, "wrong path"};
+        return {200, R"({"data":")" + kSignedUrl + R"("})", "application/json"};
+    });
+    vtapi::VirusTotal vt{with_url(ok_server.url(""))};
+    CHECK(vt.get_file_download_url(kSha256) == kSignedUrl);
+
+    // Junk hash → VtError before any HTTP call.
+    bool server_hit = false;
+    MockServer junk_server([&server_hit](const MockRequest&) -> MockResponse {
+        server_hit = true;
+        return {200, "{}", "application/json"};
+    });
+    vtapi::VirusTotal junk{with_url(junk_server.url(""))};
+    CHECK_THROWS_AS(junk.get_file_download_url("not-a-hash"), vtapi::VtError);
+    CHECK(!server_hit);
+
+    // 404 → NotFound (file never scanned).
+    MockServer nf_server([](const MockRequest&) -> MockResponse {
+        return {404, R"({"error":{"code":"NotFoundError","message":"File not found"}})",
+                "application/json"};
+    });
+    vtapi::VirusTotal nf{with_url(nf_server.url(""))};
+    CHECK_THROWS_AS(nf.get_file_download_url(kSha256), vtapi::NotFound);
+}
+
+void test_download_file() {
+    const std::string kKey(64, 'a');
+    const std::string kSha256 =
+        "275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f";
+    const std::string kEicar =
+        "X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*";
+
+    vtapi::ClientOptions opt;
+    opt.api_key = kKey;
+    opt.verify_ssl = false;
+    opt.timeout = std::chrono::seconds(5);
+    opt.requests_per_minute = 0.0;
+
+    const auto with_url = [&](const std::string& url) {
+        vtapi::ClientOptions o = opt;
+        o.base_url = url;
+        return o;
+    };
+
+    const std::filesystem::path temp =
+        std::filesystem::temp_directory_path() /
+        ("vtapi_download_test_" +
+         std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(temp);
+    const std::filesystem::path out = temp / "download.bin";
+
+    // Real-world download flow: GET /files/{id}/download answers a 302 redirect
+    // to a signed URL; curl follows it and the final body is the file bytes.
+    std::string signed_target;
+    MockServer dl_server([&](const MockRequest& req) -> MockResponse {
+        const auto key = req.headers.find("x-apikey");
+        if (key == req.headers.end() || key->second != kKey)
+            return {403, "bad key"};
+        if (req.path == "/files/" + kSha256 + "/download")
+            return {302, "", "text/plain", signed_target};
+        if (req.path == "/dl/eicar.bin")
+            return {200, kEicar, "application/octet-stream"};
+        return {404, "wrong path"};
+    });
+    signed_target = dl_server.url("/dl/eicar.bin");
+
+    vtapi::VirusTotal vt{with_url(dl_server.url(""))};
+    vt.download_file(kSha256, out.string());
+    std::ifstream in(out, std::ios::binary);
+    const std::string written{std::istreambuf_iterator<char>(in),
+                              std::istreambuf_iterator<char>{}};
+    CHECK(written == kEicar);
+    // The temporary ".part" sibling must not survive a successful transfer.
+    CHECK(!std::filesystem::exists(out.string() + ".part"));
+
+    // Premium-required endpoint: 403 → AuthError. And 404 → NotFound.
+    MockServer auth_server([](const MockRequest&) -> MockResponse {
+        return {403, R"({"error":{"code":"ForbiddenError","message":"privileges required"}})",
+                "application/json"};
+    });
+    vtapi::VirusTotal auth{with_url(auth_server.url(""))};
+    CHECK_THROWS_AS(auth.download_file(kSha256, out.string()),
+                    vtapi::AuthError);
+
+    MockServer nf_server([](const MockRequest&) -> MockResponse {
+        return {404, R"({"error":{"code":"NotFoundError","message":"File not found"}})",
+                "application/json"};
+    });
+    vtapi::VirusTotal nf{with_url(nf_server.url(""))};
+    CHECK_THROWS_AS(nf.download_file(kSha256, out.string()), vtapi::NotFound);
+
+    // Unwritable destination → VtError and no partial file is left behind.
+    MockServer ok_server([&](const MockRequest&) -> MockResponse {
+        return {200, kEicar, "application/octet-stream"};
+    });
+    vtapi::VirusTotal writable{with_url(ok_server.url(""))};
+    bool unwritable = false;
+    try {
+        writable.download_file(kSha256, (temp / "no_such_dir" / "x.bin").string());
+    } catch (const vtapi::VtError&) {
+        unwritable = true;
+    }
+    CHECK(unwritable);
+    CHECK(!std::filesystem::exists(temp / "no_such_dir"));
+
+    // Junk hash → VtError before any HTTP.
+    bool hit = false;
+    MockServer junk_server([&hit, &kEicar](const MockRequest&) -> MockResponse {
+        hit = true;
+        return {200, kEicar, "application/octet-stream"};
+    });
+    vtapi::VirusTotal junk{with_url(junk_server.url(""))};
+    CHECK_THROWS_AS(junk.download_file("nope", out.string()), vtapi::VtError);
+    CHECK(!hit);
+
+    std::filesystem::remove_all(temp);
+}
+
+void test_rescan_file() {
+    const std::string kKey(64, 'a');
+    const std::string kSha256 =
+        "275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f";
+    const std::string kAnalysisId =
+        "u-275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f-201701190253";
+
+    vtapi::ClientOptions opt;
+    opt.api_key = kKey;
+    opt.verify_ssl = false;
+    opt.timeout = std::chrono::seconds(5);
+    opt.requests_per_minute = 0.0;
+
+    const auto with_url = [&](const std::string& url) {
+        vtapi::ClientOptions o = opt;
+        o.base_url = url;
+        return o;
+    };
+
+    // POST /files/{id}/analyse answers a fresh analysis id (v3 analysis shape).
+    MockServer ok_server([&](const MockRequest& req) -> MockResponse {
+        if (req.method != "POST" || req.path != "/files/" + kSha256 + "/analyse")
+            return {400, "bad request"};
+        const auto key = req.headers.find("x-apikey");
+        if (key == req.headers.end() || key->second != kKey)
+            return {403, "bad key"};
+        return {200,
+                R"({"data":{"type":"analysis","id":")" + kAnalysisId + R"("}})",
+                "application/json"};
+    });
+    vtapi::VirusTotal vt{with_url(ok_server.url(""))};
+    const vtapi::ScanResult result = vt.rescan_file(kSha256);
+    CHECK(result.type == "analysis");
+    CHECK(result.id == kAnalysisId);
+
+    // 404 → NotFound: rescanning a file never scanned is meaningless.
+    MockServer nf_server([](const MockRequest&) -> MockResponse {
+        return {404, R"({"error":{"code":"NotFoundError","message":"File not found"}})",
+                "application/json"};
+    });
+    vtapi::VirusTotal nf{with_url(nf_server.url(""))};
+    CHECK_THROWS_AS(nf.rescan_file(kSha256), vtapi::NotFound);
+
+    // Junk hash → VtError before any HTTP.
+    bool hit = false;
+    MockServer junk_server([&hit](const MockRequest&) -> MockResponse {
+        hit = true;
+        return {200, "{}", "application/json"};
+    });
+    vtapi::VirusTotal junk{with_url(junk_server.url(""))};
+    CHECK_THROWS_AS(junk.rescan_file("nope"), vtapi::VtError);
+    CHECK(!hit);
+}
+
+void test_rescan_files_and_reports() {
+    const std::string kKey(64, 'a');
+    const std::string kSha256 =
+        "275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f";
+    const std::string kSha256B =
+        "3395856ce81f2b7382dee72602f798b642f14140";
+    const std::string kAnalysisId =
+        "u-275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f-1680798089";
+
+    vtapi::ClientOptions opt;
+    opt.api_key = kKey;
+    opt.verify_ssl = false;
+    opt.timeout = std::chrono::seconds(5);
+    opt.requests_per_minute = 0.0;
+
+    const auto with_url = [&](const std::string& url) {
+        vtapi::ClientOptions o = opt;
+        o.base_url = url;
+        return o;
+    };
+
+    // User flow: re-analyze several known files, one HTTP call per hash (v3
+    // has no batch endpoint), then pull each report for the fresh verdicts.
+    std::vector<std::string> rescanned;
+    MockServer flow_server([&](const MockRequest& req) -> MockResponse {
+        if (req.method == "POST") {
+            rescanned.push_back(req.path);
+            return {200,
+                    R"({"data":{"type":"analysis","id":")" + kAnalysisId + R"("}})",
+                    "application/json"};
+        }
+        if (req.method == "GET") {
+            if (req.path == "/files/" + kSha256)
+                return {200, load_fixture("file_report.json"), "application/json"};
+            if (req.path == "/files/" + kSha256B)
+                return {200, load_fixture("file_report.json"), "application/json"};
+            return {404, "no"};
+        }
+        return {400, "unexpected"};
+    });
+    vtapi::VirusTotal vt{with_url(flow_server.url(""))};
+
+    const std::vector<std::string> hashes = {kSha256, kSha256B};
+    const std::vector<vtapi::ScanResult> rescans = vt.rescan_files(hashes);
+    CHECK(rescans.size() == 2);
+    CHECK(rescans[0].id == kAnalysisId);
+    CHECK(rescans[1].id == kAnalysisId);
+    CHECK(rescanned.size() == 2);
+    CHECK(rescanned[0] == "/files/" + kSha256 + "/analyse");
+    CHECK(rescanned[1] == "/files/" + kSha256B + "/analyse");
+
+    const std::vector<vtapi::FileReport> reports = vt.get_file_reports(hashes);
+    CHECK(reports.size() == 2);
+    CHECK(reports[0].sha256 == kSha256);
+    CHECK(reports[1].sha256 == kSha256);
+
+    // One junk hash in the list → VtError before any HTTP request is made.
+    bool hit = false;
+    MockServer junk_server([&hit](const MockRequest&) -> MockResponse {
+        hit = true;
+        return {200, "{}", "application/json"};
+    });
+    vtapi::VirusTotal junk{with_url(junk_server.url(""))};
+    CHECK_THROWS_AS(junk.rescan_files({kSha256, "bad"}), vtapi::VtError);
+    CHECK_THROWS_AS(junk.get_file_reports({kSha256, "bad"}), vtapi::VtError);
+    CHECK(!hit);
+}
+
+void test_behaviour_model() {
+    // Canonical behaviour list parses into typed fields + raw attributes.
+    const nlohmann::json roots =
+        nlohmann::json::parse(load_fixture("file_behaviours.json"));
+    const vtapi::BehaviourList list = vtapi::behaviour_list_from_json(roots);
+    CHECK(list.count == 2);
+    CHECK(list.behaviours.size() == 2);
+
+    const vtapi::FileBehaviour& first = list.behaviours[0];
+    CHECK(first.type == "file_behaviour");
+    CHECK(first.id ==
+          "275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f_VirusTotal Jujubox");
+    CHECK(first.sandbox_name == "VirusTotal Jujubox");
+    CHECK(first.analysis_date == 1669409515);
+    CHECK(first.last_modification_date == 1669409615);
+    CHECK(first.behash == "62c2064909c818e0914b1df00b8b82dc79c47684");
+    CHECK(first.verdicts.size() == 1 && first.verdicts[0] == "UNKNOWN_VERDICT");
+    CHECK(first.tags.size() == 1 && first.tags[0] == "eicar");
+    CHECK(first.has_pcap);
+    CHECK(!first.has_html_report);
+    CHECK(first.mitre_attack_techniques.size() == 1);
+    CHECK(first.mitre_attack_techniques[0].id == "T1082");
+    CHECK(first.mitre_attack_techniques[0].signature_description ==
+          "Reads software policies");
+    CHECK(first.signature_matches.size() == 1);
+    const vtapi::SignatureMatch& match = first.signature_matches[0];
+    CHECK(match.name == "detect-eicar");
+    CHECK(match.format == "SIG_FORMAT_CAPA");
+    CHECK(match.authors.size() == 1 && match.authors[0] == "VirusTotal");
+    CHECK(match.match_data.size() == 1);
+    // Raw attributes survive untouched.
+    CHECK(first.attributes.contains("calls_highlighted") == false);
+    CHECK(first.attributes["sandbox_name"] == "VirusTotal Jujubox");
+
+    // The raw artefact suffix helper maps each enum value to its path segment.
+    CHECK(vtapi::behaviour_report_file_suffix(vtapi::BehaviourReportFile::kHtml) ==
+          "html");
+    CHECK(vtapi::behaviour_report_file_suffix(vtapi::BehaviourReportFile::kEvtx) ==
+          "evtx");
+    CHECK(vtapi::behaviour_report_file_suffix(vtapi::BehaviourReportFile::kPcap) ==
+          "pcap");
+    CHECK(vtapi::behaviour_report_file_suffix(vtapi::BehaviourReportFile::kMemdump) ==
+          "memdump");
+
+    // Single report: same parser on a data object.
+    const nlohmann::json single =
+        nlohmann::json::parse(load_fixture("file_behaviour.json"));
+    const vtapi::FileBehaviour report =
+        vtapi::file_behaviour_from_json(single["data"]);
+    CHECK(report.id == first.id);
+    CHECK(report.sandbox_name == "VirusTotal Jujubox");
+
+    // Summary keeps the merged attributes and a few typed fields.
+    const nlohmann::json summary_root =
+        nlohmann::json::parse(load_fixture("behaviour_summary.json"));
+    const vtapi::BehaviourSummary summary =
+        vtapi::behaviour_summary_from_json(summary_root);
+    CHECK(summary.behash == "62c2064909c818e0914b1df00b8b82dc79c47684");
+    CHECK(summary.tags.size() == 1 && summary.tags[0] == "eicar");
+    CHECK(summary.attributes.contains("calls_highlighted"));
+    CHECK(summary.attributes.contains("files_opened"));
+
+    // Sparse input falls back to defaults without throwing.
+    const vtapi::FileBehaviour sparse =
+        vtapi::file_behaviour_from_json(nlohmann::json::object());
+    CHECK(sparse.sandbox_name.empty());
+    CHECK(sparse.analysis_date == 0);
+    CHECK(sparse.mitre_attack_techniques.empty());
+    const vtapi::BehaviourList empty_list =
+        vtapi::behaviour_list_from_json(nlohmann::json::array());
+    CHECK(empty_list.count == 0);
+    CHECK(empty_list.behaviours.empty());
+}
+
+void test_behaviour_client() {
+    const std::string kKey(64, 'a');
+    const std::string kSha256 =
+        "275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f";
+
+    vtapi::ClientOptions opt;
+    opt.api_key = kKey;
+    opt.verify_ssl = false;
+    opt.timeout = std::chrono::seconds(5);
+    opt.requests_per_minute = 0.0;
+
+    const auto with_url = [&](const std::string& url) {
+        vtapi::ClientOptions o = opt;
+        o.base_url = url;
+        return o;
+    };
+
+    // All behaviour endpoints for one file, served from real response shapes.
+    MockServer server([&](const MockRequest& req) -> MockResponse {
+        const auto key = req.headers.find("x-apikey");
+        if (key == req.headers.end() || key->second != kKey)
+            return {403, "bad key"};
+        if (req.path == "/files/" + kSha256 + "/behaviours")
+            return {200, load_fixture("file_behaviours.json"), "application/json"};
+        if (req.path == "/files/" + kSha256 + "/behaviour_summary")
+            return {200, load_fixture("behaviour_summary.json"), "application/json"};
+        return {404, "no such path"};
+    });
+    vtapi::VirusTotal vt{with_url(server.url(""))};
+
+    const vtapi::BehaviourList list = vt.get_file_behaviours(kSha256);
+    CHECK(list.count == 2);
+    CHECK(list.behaviours.size() == 2);
+    CHECK(list.behaviours[0].sandbox_name == "VirusTotal Jujubox");
+    CHECK(list.behaviours[1].sandbox_name == "Zenbox");
+
+    const vtapi::BehaviourSummary summary =
+        vt.get_file_behaviour_summary(kSha256);
+    CHECK(summary.behash == "62c2064909c818e0914b1df00b8b82dc79c47684");
+    CHECK(summary.attributes.contains("calls_highlighted"));
+
+    // 404 → NotFound (file never scanned / has no sandbox reports).
+    MockServer nf_server([](const MockRequest&) -> MockResponse {
+        return {404, R"({"error":{"code":"NotFoundError","message":"File not found"}})",
+                "application/json"};
+    });
+    vtapi::VirusTotal nf{with_url(nf_server.url(""))};
+    CHECK_THROWS_AS(nf.get_file_behaviours(kSha256), vtapi::NotFound);
+
+    // Junk hash → VtError before any HTTP.
+    bool hit = false;
+    MockServer junk_server([&hit](const MockRequest&) -> MockResponse {
+        hit = true;
+        return {200, "{}", "application/json"};
+    });
+    vtapi::VirusTotal junk{with_url(junk_server.url(""))};
+    CHECK_THROWS_AS(junk.get_file_behaviours("nope"), vtapi::VtError);
+    CHECK(!hit);
+
+    // Sandbox ids contain spaces; the client percent-encodes them into the
+    // request path, exactly as the real API expects.
+    const std::string sandbox_id =
+        kSha256 + "_VirusTotal Jujubox";
+    const std::string encoded = vtapi::detail::percent_encode(sandbox_id);
+    MockServer bh_server([&](const MockRequest& req) -> MockResponse {
+        const auto key = req.headers.find("x-apikey");
+        if (key == req.headers.end() || key->second != kKey)
+            return {403, "bad key"};
+        if (req.path == "/file_behaviours/" + encoded)
+            return {200, load_fixture("file_behaviour.json"), "application/json"};
+        return {404, "no such sandbox"};
+    });
+    vtapi::VirusTotal bh{with_url(bh_server.url(""))};
+    const vtapi::FileBehaviour report = bh.get_file_behaviour(sandbox_id);
+    CHECK(report.sandbox_name == "VirusTotal Jujubox");
+    CHECK(report.behash == "62c2064909c818e0914b1df00b8b82dc79c47684");
+}
+
+void test_behaviour_relationships_and_files() {
+    const std::string kKey(64, 'a');
+    const std::string kSandbox =
+        "275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f_VirusTotal Jujubox";
+
+    vtapi::ClientOptions opt;
+    opt.api_key = kKey;
+    opt.verify_ssl = false;
+    opt.timeout = std::chrono::seconds(5);
+    opt.requests_per_minute = 0.0;
+
+    const auto with_url = [&](const std::string& url) {
+        vtapi::ClientOptions o = opt;
+        o.base_url = url;
+        return o;
+    };
+
+    const std::string encoded = vtapi::detail::percent_encode(kSandbox);
+
+    // Behaviour relationships: GET /file_behaviours/{id}/processes.
+    MockServer rel_server([&](const MockRequest& req) -> MockResponse {
+        if (req.path == "/file_behaviours/" + encoded + "/processes") {
+            return {200,
+                    R"({"meta":{"count":1},"data":[{"type":"process","id":"2248"}],"links":{"self":"x"}})",
+                    "application/json"};
+        }
+        return {404, "no"};
+    });
+    vtapi::VirusTotal rel{with_url(rel_server.url(""))};
+    const vtapi::RelationshipList processes =
+        rel.get_file_behaviour_relationships(kSandbox, "processes");
+    CHECK(processes.count == 1);
+    CHECK(processes.objects.size() == 1);
+    CHECK(processes.objects[0].type == "process");
+    CHECK(processes.objects[0].id == "2248");
+
+    // Sandbox ids are free-form strings (including spaces) — still encoded.
+    MockServer space_server([&](const MockRequest& req) -> MockResponse {
+        if (req.path == "/file_behaviours/" + encoded)
+            return {200, load_fixture("file_behaviour.json"), "application/json"};
+        return {404, "no"};
+    });
+    vtapi::VirusTotal space{with_url(space_server.url(""))};
+    CHECK(space.get_file_behaviour(kSandbox).sandbox_name ==
+          "VirusTotal Jujubox");
+
+    // Raw artefacts: html is text, evtx/pcap/memdump come back as bytes.
+    MockServer art_server([&](const MockRequest& req) -> MockResponse {
+        if (req.path == "/file_behaviours/" + encoded + "/html")
+            return {200, "<!DOCTYPE html><html></html>", "text/plain"};
+        if (req.path == "/file_behaviours/" + encoded + "/pcap")
+            return {200, std::string("\x0a\x0b\x0c\x0d", 4), "application/octet-stream"};
+        return {404, "no"};
+    });
+    vtapi::VirusTotal art{with_url(art_server.url(""))};
+    CHECK(art.get_file_behaviour_file(kSandbox, vtapi::BehaviourReportFile::kHtml) ==
+          "<!DOCTYPE html><html></html>");
+    const std::string pcap = art.get_file_behaviour_file(
+        kSandbox, vtapi::BehaviourReportFile::kPcap);
+    CHECK(pcap.size() == 4 && pcap[0] == '\x0a' && pcap[3] == '\x0d');
+
+    // Unknown sandbox report → NotFound.
+    MockServer nf_server([](const MockRequest&) -> MockResponse {
+        return {404, R"({"error":{"code":"NotFoundError","message":"not found"}})",
+                "application/json"};
+    });
+    vtapi::VirusTotal nf{with_url(nf_server.url(""))};
+    CHECK_THROWS_AS(nf.get_file_behaviour(kSandbox), vtapi::NotFound);
+    CHECK_THROWS_AS(nf.get_file_behaviour_file(
+                        kSandbox, vtapi::BehaviourReportFile::kEvtx),
+                    vtapi::NotFound);
+}
+
+void test_sigma_rule() {
+    const std::string kKey(64, 'a');
+    const std::string kSigmaId =
+        "5c3ea6806114163b8cdf5735aeb07e702ab63e0e486f721df84cf675e2b0a04b";
+
+    vtapi::ClientOptions opt;
+    opt.api_key = kKey;
+    opt.verify_ssl = false;
+    opt.timeout = std::chrono::seconds(5);
+    opt.requests_per_minute = 0.0;
+
+    const auto with_url = [&](const std::string& url) {
+        vtapi::ClientOptions o = opt;
+        o.base_url = url;
+        return o;
+    };
+
+    // 200 → full SigmaRule
+    MockServer ok_server([&](const MockRequest& req) -> MockResponse {
+        const auto key = req.headers.find("x-apikey");
+        if (key == req.headers.end() || key->second != kKey)
+            return {403, "bad key"};
+        if (req.path != "/sigma_rules/" + kSigmaId)
+            return {404, "wrong path"};
+        return {200, load_fixture("sigma_rule.json"), "application/json"};
+    });
+    vtapi::VirusTotal vt{with_url(ok_server.url(""))};
+    const vtapi::SigmaRule rule = vt.get_sigma_rule(kSigmaId);
+    CHECK(rule.id == kSigmaId);
+    CHECK(rule.title == "Hiding Files with Attrib.exe");
+    CHECK(rule.description == "Detects the use of attrib.exe to hide files");
+    CHECK(rule.level == "low");
+    CHECK(rule.status == "experimental");
+    CHECK(rule.source == "Sigma Integrated Rule Set (GitHub)");
+    CHECK(rule.tags.size() == 2);
+    CHECK(rule.tags[0] == "attack.persistence");
+    CHECK(rule.tags[1] == "attack.defense_evasion");
+    CHECK(rule.false_positives.size() == 1);
+    CHECK(rule.false_positives[0] == "Some legit apps can use attrib");
+    CHECK(rule.fields.size() == 1);
+    CHECK(rule.fields[0] == "CommandLine");
+    CHECK(rule.references.size() == 1);
+    CHECK(rule.references[0].find("SigmaHQ") != std::string::npos);
+    // raw attributes should contain the full metadata
+    CHECK(rule.raw.contains("title"));
+    CHECK(rule.raw.contains("level"));
+
+    // Sparse fixture: missing fields fall back to defaults without throwing.
+    const vtapi::SigmaRule sparse =
+        vtapi::sigma_rule_from_json(nlohmann::json::parse(R"json({"data":{"id":"x"}})json"));
+    CHECK(sparse.id == "x");
+    CHECK(sparse.title.empty());
+    CHECK(sparse.description.empty());
+    CHECK(sparse.level.empty());
+    CHECK(sparse.status.empty());
+    CHECK(sparse.tags.empty());
+
+    // Non-object roots are tolerated (defensive, empty rule).
+    const vtapi::SigmaRule weird =
+        vtapi::sigma_rule_from_json(nlohmann::json::array());
+    CHECK(weird.id.empty());
+}
+
+void test_yara_ruleset() {
+    const std::string kKey(64, 'a');
+    const std::string kYaraId = "000abc43";
+
+    vtapi::ClientOptions opt;
+    opt.api_key = kKey;
+    opt.verify_ssl = false;
+    opt.timeout = std::chrono::seconds(5);
+    opt.requests_per_minute = 0.0;
+
+    const auto with_url = [&](const std::string& url) {
+        vtapi::ClientOptions o = opt;
+        o.base_url = url;
+        return o;
+    };
+
+    // 200 → full YaraRuleset
+    MockServer ok_server([&](const MockRequest& req) -> MockResponse {
+        const auto key = req.headers.find("x-apikey");
+        if (key == req.headers.end() || key->second != kKey)
+            return {403, "bad key"};
+        if (req.path != "/yara_rulesets/" + kYaraId)
+            return {404, "wrong path"};
+        return {200, load_fixture("yara_ruleset.json"), "application/json"};
+    });
+    vtapi::VirusTotal vt{with_url(ok_server.url(""))};
+    const vtapi::YaraRuleset ruleset = vt.get_yara_ruleset(kYaraId);
+    CHECK(ruleset.id == kYaraId);
+    CHECK(ruleset.name == "evilness");
+    CHECK(ruleset.rules.find("rule evilness") != std::string::npos);
+    CHECK(ruleset.rules.find("$s1 =") != std::string::npos);
+    CHECK(ruleset.source ==
+          "https://github.com/VirusTotal/yara/blob/master/evilness.yar");
+    // raw attributes should contain the rules field
+    CHECK(ruleset.raw.contains("rules"));
+    CHECK(ruleset.raw.contains("source"));
+
+    // Sparse fixture: missing fields fall back to defaults without throwing.
+    const vtapi::YaraRuleset sparse =
+        vtapi::yara_ruleset_from_json(nlohmann::json::parse(R"json({"data":{"id":"x"}})json"));
+    CHECK(sparse.id == "x");
+    CHECK(sparse.name.empty());
+    CHECK(sparse.rules.empty());
+    CHECK(sparse.source.empty());
+
+    // Non-object roots are tolerated (defensive, empty ruleset).
+    const vtapi::YaraRuleset weird =
+        vtapi::yara_ruleset_from_json(nlohmann::json::array());
+    CHECK(weird.id.empty());
+}
+
+void test_file_relationships() {
+    const std::string kKey(64, 'a');
+    const std::string kSha256 =
+        "275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f";
+
+    vtapi::ClientOptions opt;
+    opt.api_key = kKey;
+    opt.verify_ssl = false;
+    opt.timeout = std::chrono::seconds(5);
+    opt.requests_per_minute = 0.0;
+
+    const auto with_url = [&](const std::string& url) {
+        vtapi::ClientOptions o = opt;
+        o.base_url = url;
+        return o;
+    };
+
+    // 200 → full RelationshipList of communicating files.
+    MockServer ok_server([&](const MockRequest& req) -> MockResponse {
+        const auto key = req.headers.find("x-apikey");
+        if (key == req.headers.end() || key->second != kKey)
+            return {403, "bad key"};
+        if (req.path != "/files/" + kSha256 + "/relationships/communicating_files")
+            return {404, "wrong path"};
+        return {200, load_fixture("file_relationships.json"), "application/json"};
+    });
+    vtapi::VirusTotal vt{with_url(ok_server.url(""))};
+    const vtapi::RelationshipList rels =
+        vt.get_file_relationships(kSha256, "communicating_files");
+    CHECK(rels.count == 2);
+    CHECK(rels.objects.size() == 2);
+    CHECK(rels.objects[0].type == "file");
+    CHECK(rels.objects[0].id == "3395856ce81f2b7382dee72602f798b642f14140");
+    CHECK(rels.objects[1].type == "file");
+    CHECK(rels.objects[1].id == kSha256);
+    CHECK(rels.self_link == "https://www.virustotal.com/api/v3/files/" + kSha256 +
+                               "/relationships/communicating_files");
+    CHECK(rels.next_link ==
+          "https://www.virustotal.com/api/v3/files/" + kSha256 +
+              "/relationships/communicating_files?cursor=next");
+
+    // Sparse fixture: missing fields fall back to defaults without throwing.
+    const vtapi::RelationshipList sparse =
+        vtapi::relationship_list_from_json(nlohmann::json::parse(R"json({"data":[]})json"));
+    CHECK(sparse.count == 0);
+    CHECK(sparse.objects.empty());
+
+    // Non-object roots are tolerated (defensive, empty relationships).
+    const vtapi::RelationshipList weird =
+        vtapi::relationship_list_from_json(nlohmann::json::array());
+    CHECK(weird.objects.empty());
+}
+
+void test_mitre_summary() {
+    const std::string kKey(64, 'a');
+    const std::string kSha256 =
+        "275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f";
+
+    vtapi::ClientOptions opt;
+    opt.api_key = kKey;
+    opt.verify_ssl = false;
+    opt.timeout = std::chrono::seconds(5);
+    opt.requests_per_minute = 0.0;
+
+    const auto with_url = [&](const std::string& url) {
+        vtapi::ClientOptions o = opt;
+        o.base_url = url;
+        return o;
+    };
+
+    // 200 → MITRE trees grouped per sandbox name.
+    MockServer ok_server([&](const MockRequest& req) -> MockResponse {
+        const auto key = req.headers.find("x-apikey");
+        if (key == req.headers.end() || key->second != kKey)
+            return {403, "bad key"};
+        if (req.path != "/files/" + kSha256 + "/behaviour_mitre_trees")
+            return {404, "wrong path"};
+        return {200, load_fixture("behaviour_mitre_trees.json"), "application/json"};
+    });
+    vtapi::VirusTotal vt{with_url(ok_server.url(""))};
+    const vtapi::MitreSummary mitre = vt.get_mitre_summary(kSha256);
+    CHECK(mitre.sandboxes.size() == 2);
+
+    // Zenbox: two tactics, each with techniques and signatures.
+    const auto zenbox = mitre.sandboxes.find("Zenbox");
+    CHECK(zenbox != mitre.sandboxes.end());
+    CHECK(zenbox->second.size() == 2);
+    CHECK(zenbox->second[0].id == "TA0007");
+    CHECK(zenbox->second[0].name == "Discovery");
+    CHECK(zenbox->second[0].link == "https://attack.mitre.org/tactics/TA0007/");
+    CHECK(zenbox->second[0].description.find("figure out your environment") !=
+          std::string::npos);
+    CHECK(zenbox->second[0].techniques.size() == 2);
+    CHECK(zenbox->second[0].techniques[0].id == "T1082");
+    CHECK(zenbox->second[0].techniques[0].name == "System Information Discovery");
+    CHECK(zenbox->second[0].techniques[0].link ==
+          "https://attack.mitre.org/techniques/T1082/");
+    CHECK(zenbox->second[0].techniques[0].signatures.size() == 2);
+    CHECK(zenbox->second[0].techniques[0].signatures[0].severity == "INFO");
+    CHECK(zenbox->second[0].techniques[0].signatures[0].description ==
+          "Reads software policies");
+    CHECK(zenbox->second[0].techniques[0].signatures[1].severity == "MEDIUM");
+    CHECK(zenbox->second[0].techniques[1].id == "T1057");
+    CHECK(zenbox->second[1].id == "TA0002");
+    CHECK(zenbox->second[1].techniques[0].signatures[0].severity == "HIGH");
+
+    // VirusTotal Jujubox: no tactics observed.
+    const auto jujubox = mitre.sandboxes.find("VirusTotal Jujubox");
+    CHECK(jujubox != mitre.sandboxes.end());
+    CHECK(jujubox->second.empty());
+
+    // Sparse fixture: an empty data object yields no sandboxes.
+    const vtapi::MitreSummary sparse =
+        vtapi::mitre_summary_from_json(nlohmann::json::parse(R"json({"data":{}})json"));
+    CHECK(sparse.sandboxes.empty());
+
+    // Non-object roots are tolerated (defensive, empty summary).
+    const vtapi::MitreSummary weird =
+        vtapi::mitre_summary_from_json(nlohmann::json::array());
+    CHECK(weird.sandboxes.empty());
+
+    // 404 → VtError for file never scanned
+    MockServer nf_server([](const MockRequest&) -> MockResponse {
+        return {404, R"({"error":{"code":"NotFoundError","message":"File not found"}})",
+                "application/json"};
+    });
+    vtapi::VirusTotal nf{with_url(nf_server.url(""))};
+    CHECK_THROWS_AS(nf.get_mitre_summary(kSha256), vtapi::NotFound);
+
+    // Junk hash → VtError before any HTTP
+    bool hit = false;
+    MockServer junk_server([&hit](const MockRequest&) -> MockResponse {
+        hit = true;
+        return {200, "{}", "application/json"};
+    });
+    vtapi::VirusTotal junk{with_url(junk_server.url(""))};
+    CHECK_THROWS_AS(junk.get_mitre_summary("nope"), vtapi::VtError);
+    CHECK(!hit);
+}
+
 void test_check_then_scan_round_trip() {
     const std::string kKey(64, 'a');
     const std::string kEicar =
@@ -1073,8 +1824,19 @@ int main() {
     test_scan_file();
     test_scan_file_path();
     test_scan_large_file();
+    test_get_file_download_url();
+    test_download_file();
+    test_rescan_file();
+    test_rescan_files_and_reports();
     test_check_then_scan_round_trip();
     test_public_scan_link();
+    test_behaviour_model();
+    test_behaviour_client();
+    test_behaviour_relationships_and_files();
+    test_sigma_rule();
+    test_yara_ruleset();
+    test_file_relationships();
+    test_mitre_summary();
 #ifndef _WIN32
     test_cli_report();
     test_cli_scan_file();

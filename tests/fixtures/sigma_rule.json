@@ -1,0 +1,24 @@
+{
+  "data": {
+    "type": "sigma_rule",
+    "id": "5c3ea6806114163b8cdf5735aeb07e702ab63e0e486f721df84cf675e2b0a04b",
+    "links": {
+      "self": "https://www.virustotal.com/api/v3/sigma_rules/5c3ea6806114163b8cdf5735aeb07e702ab63e0e486f721df84cf675e2b0a04b"
+    },
+    "attributes": {
+      "title": "Hiding Files with Attrib.exe",
+      "description": "Detects the use of attrib.exe to hide files",
+      "level": "low",
+      "status": "experimental",
+      "source": "Sigma Integrated Rule Set (GitHub)",
+      "tags": ["attack.persistence", "attack.defense_evasion"],
+      "false_positives": [
+        "Some legit apps can use attrib"
+      ],
+      "fields": ["CommandLine"],
+      "references": [
+        "https://github.com/SigmaHQ/sigma/blob/master/rules/windows/process_creation/proc_creation_win_attrib_hiding_files.yml"
+      ]
+    }
+  }
+}

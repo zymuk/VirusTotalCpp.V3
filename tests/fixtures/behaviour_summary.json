@@ -1,0 +1,30 @@
+{
+  "data": {
+    "behash": "62c2064909c818e0914b1df00b8b82dc79c47684",
+    "calls_highlighted": [
+      {
+        "address": "0x1000",
+        "arguments": [
+          "String"
+        ],
+        "call": "CreateFileA",
+        "category": "MANIPULATING_RESOURCES",
+        "parameters": {
+          "filename": "C:\\Windows\\example.txt"
+        }
+      }
+    ],
+    "files_opened": [
+      "C:\\Windows\\example.txt"
+    ],
+    "tags": [
+      "eicar"
+    ],
+    "verdicts": [
+      "UNKNOWN_VERDICT"
+    ]
+  },
+  "links": {
+    "self": "https://www.virustotal.com/api/v3/files/275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f/behaviour_summary"
+  }
+}

@@ -103,6 +103,8 @@ struct MockResponse {
     int status = 200;
     std::string body;
     std::string content_type = "text/plain";
+    // When non-empty, sent as a Location header (used to simulate redirects).
+    std::string location;
 };
 
 namespace mock {
@@ -112,6 +114,7 @@ inline std::string status_reason(int status) {
         case 200: return "OK";
         case 201: return "Created";
         case 204: return "No Content";
+        case 302: return "Found";
         case 400: return "Bad Request";
         case 403: return "Forbidden";
         case 404: return "Not Found";
@@ -340,6 +343,7 @@ private:
             mock::status_reason(resp.status) + "\r\n" +
             "Content-Type: " + resp.content_type + "\r\n" +
             "Content-Length: " + std::to_string(resp.body.size()) + "\r\n" +
+            (resp.location.empty() ? "" : "Location: " + resp.location + "\r\n") +
             "Connection: close\r\n\r\n";
         const std::string payload = head + resp.body;
         send(client, payload.data(), static_cast<int>(payload.size()), 0);

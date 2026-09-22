@@ -27,6 +27,13 @@ inline int64_t json_int(const nlohmann::json& object, const char* key) {
     return it->get<int64_t>();
 }
 
+inline bool json_bool(const nlohmann::json& object, const char* key) {
+    const auto it = object.find(key);
+    if (it == object.end() || !it->is_boolean())
+        return false;
+    return it->get<bool>();
+}
+
 inline std::vector<std::string> json_strings(const nlohmann::json& object,
                                              const char* key) {
     std::vector<std::string> out;

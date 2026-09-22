@@ -3,26 +3,32 @@
 A C++17 client library for the **VirusTotal API v3**, ported from the feature
 surface of [VirusTotalNet](https://github.com/Genbox/VirusTotalNet) (C#, API v2).
 
-The **v1.0.0** release implements the file check-then-scan flow: look a file hash
-up, and if VirusTotal has never seen it, submit the file for scanning.
+The **v1.2.x** releases build on the v1.0.0 file check-then-scan flow and add the
+rest of the file API: large scans, downloads, rescanning, behaviour reports,
+Sigma/YARA rules, MITRE summaries and file relationships.
 
-## Status - v1.0.0
+## Status - v1.2.0
 
-Implemented in this release:
+Implemented:
 
 - `get_file_report(hash)` - ask VirusTotal whether a file hash (md5/sha1/sha256)
   has already been scanned (`GET /files/{id}`)
 - `scan_file(...)` - submit a file for scanning, returns the analysis id and the
   file identifiers (`POST /files`, multipart, <= 32 MB)
-- `get_public_file_scan_link(hash)` - public virustotal.com report URL for a hash
-- CLI `vtapi_eicar` - drive both steps of the flow from a shell
+- `scan_large_file(...)` - two-step upload for files up to 650 MB
+- `get_file_download_url(hash)` / `download_file(hash, path)` - fetch the raw file (premium)
+- `rescan_file(hash)` / `rescan_files(hashes)` - request a fresh analysis
+- `get_file_reports(hashes)` - loop over `get_file_report`
+- behaviour reports: list, summary, single report, HTML/EVTX/PCAP/memory-dump
+- Sigma rules, YARA rulesets, MITRE ATT&CK summaries, file relationships
+- `get_public_file_scan_link(hash)` - the public virustotal.com report URL
+- CLI `vtapi_eicar` - drive the file flow from a shell
 
 Planned for later releases:
 
 - URLs, IP addresses and domains: report, rescan
 - Comments: list and add per object type
 - Analysis polling (`GET /analyses/{id}`)
-- Large-file upload (> 32 MB), downloads, behaviour reports
 
 Endpoints are implemented one at a time.
 
@@ -133,6 +139,21 @@ arguments prints the usage. Exit codes: `0` success, `1` runtime error,
 | `ScanResult scan_file(data, filename, password = {})` | `POST /files` (multipart, <= 32 MB) |
 | `ScanResult scan_file(path, password = {})` | `POST /files` (reads the file, sends its basename) |
 | `std::string get_public_file_scan_link(hash)` | no request - builds `https://www.virustotal.com/gui/file/{id}/detection` |
+| `ScanResult scan_large_file(data\|path, password = {})` | `GET /files/upload_url` then `POST {url}` (up to 650 MB) |
+| `std::string get_file_download_url(hash)` | `GET /files/{id}/download_url` (premium) |
+| `void download_file(hash, dest_path)` | `GET /files/{id}/download` (premium) |
+| `ScanResult rescan_file(hash)` | `POST /files/{id}/analyse` |
+| `std::vector<ScanResult> rescan_files(hashes)` | loop `POST /files/{id}/analyse` |
+| `std::vector<FileReport> get_file_reports(hashes)` | loop `GET /files/{id}` |
+| `BehaviourList get_file_behaviours(hash)` | `GET /files/{id}/behaviours` |
+| `BehaviourSummary get_file_behaviour_summary(hash)` | `GET /files/{id}/behaviour_summary` |
+| `FileBehaviour get_file_behaviour(sandbox_id)` | `GET /file_behaviours/{id}` |
+| `RelationshipList get_file_behaviour_relationships(sandbox_id, rel)` | `GET /file_behaviours/{id}/{rel}` |
+| `std::string get_file_behaviour_file(sandbox_id, format)` | `GET /file_behaviours/{id}/{html\|evtx\|pcap\|memdump}` |
+| `SigmaRule get_sigma_rule(id)` | `GET /sigma_rules/{id}` |
+| `YaraRuleset get_yara_ruleset(id)` | `GET /yara_rulesets/{id}` |
+| `MitreSummary get_mitre_summary(hash)` | `GET /files/{id}/behaviour_mitre_trees` |
+| `RelationshipList get_file_relationships(hash, rel)` | `GET /files/{id}/relationships/{rel}` |
 
 The response models match the v3 JSON payloads (`FileReport` from
 `data.attributes.*`, `ScanResult` from `data.*` plus `meta.file_info.*`). Field

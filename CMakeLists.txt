@@ -84,6 +84,11 @@ add_library(vtapi
   src/response.cpp
   src/file_report.cpp
   src/scan_result.cpp
+  src/behaviour.cpp
+  src/mitre.cpp
+  src/relationship.cpp
+  src/sigma_rule.cpp
+  src/yara_ruleset.cpp
   src/client.cpp
 )
 add_library(vtapi::vtapi ALIAS vtapi)
