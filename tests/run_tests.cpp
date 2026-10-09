@@ -29,6 +29,7 @@
 #include "vtapi/model/mitre.hpp"
 #include "vtapi/model/relationship.hpp"
 #include "vtapi/model/scan_result.hpp"
+#include "vtapi/model/url_report.hpp"
 #include "vtapi/model/sigma_rule.hpp"
 #include "vtapi/model/yara_ruleset.hpp"
 #include "vtapi/types.hpp"
@@ -387,6 +388,161 @@ void test_file_report() {
     CHECK(weird.sha256.empty());
 }
 
+void test_url_report() {
+    // Canonical URL report parses into a fully-populated UrlReport.
+    const nlohmann::json root = nlohmann::json::parse(load_fixture("url_report.json"));
+    const vtapi::UrlReport report = vtapi::url_report_from_json(root);
+
+    // data.* carries the base64url id (no "positives"/"response_code" v2 shape).
+    CHECK(report.type == "url");
+    CHECK(report.id == "aHR0cHM6Ly9leGFtcGxlLmNvbQ");
+    CHECK(report.self_link == "https://www.virustotal.com/api/v3/urls/aHR0cHM6Ly9leGFtcGxlLmNvbQ");
+
+    // data.attributes.* surfaces with v3 names.
+    CHECK(report.url == "https://example.com");
+    CHECK(report.last_analysis_date == 1653654377);
+    CHECK(report.last_modification_date == 1653654377);
+    CHECK(report.times_submitted == 1);
+    CHECK(report.reputation == 0);
+
+    const vtapi::AnalysisStats& stats = report.last_analysis_stats;
+    CHECK(stats.harmless == 10);
+    CHECK(stats.malicious == 50);
+    CHECK(stats.suspicious == 0);
+    CHECK(stats.timeout == 0);
+    CHECK(stats.undetected == 5);
+    CHECK(stats.type_unsupported == 0);
+
+    CHECK(report.last_analysis_results.size() == 1);
+    const auto flagged = report.last_analysis_results.find("EngineA");
+    CHECK(flagged != report.last_analysis_results.end());
+    if (flagged != report.last_analysis_results.end()) {
+        CHECK(flagged->second.category == "malicious");
+        CHECK(flagged->second.result == "Phishing");
+        CHECK(flagged->second.engine_name == "EngineA");
+        CHECK(flagged->second.engine_version == "2.0");
+        CHECK(flagged->second.engine_update == "20230101");
+    }
+
+    // Sparse fixture: missing fields fall back to defaults without throwing.
+    const vtapi::UrlReport sparse =
+        vtapi::url_report_from_json(nlohmann::json::parse(R"({"data":{"id":"x"}})"));
+    CHECK(sparse.id == "x");
+    CHECK(sparse.type.empty());
+    CHECK(sparse.self_link.empty());
+    CHECK(sparse.url.empty());
+    CHECK(sparse.last_analysis_date == 0);
+    CHECK(sparse.times_submitted == 0);
+    CHECK(sparse.reputation == 0);
+    CHECK(sparse.last_analysis_stats.malicious == 0);
+    CHECK(sparse.last_analysis_results.empty());
+
+    // Non-object root tolerated (empty report).
+    const vtapi::UrlReport weird = vtapi::url_report_from_json(nlohmann::json::array());
+    CHECK(weird.id.empty());
+}
+
+void test_scan_url() {
+    const std::string kKey(64, 'a');
+    const std::string kAnalysisId =
+        "u-275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f-1680798089";
+    vtapi::ClientOptions opt;
+    opt.api_key = kKey;
+    opt.verify_ssl = false;
+    opt.timeout = std::chrono::seconds(5);
+    opt.requests_per_minute = 0.0;
+
+    MockServer server([](const MockRequest& req) -> MockResponse {
+        if (req.method != "POST" || req.path != "/urls")
+            return {400, "bad"};
+        const auto url_field = req.form_fields.find("url");
+        if (url_field == req.form_fields.end() || url_field->second != "https://example.com")
+            return {400, "bad url field"};
+        return {200, load_fixture("scan_result.json"), "application/json"};
+    });
+    opt.base_url = server.url("");
+    vtapi::VirusTotal vt{opt};
+    const vtapi::ScanResult result = vt.scan_url("https://example.com");
+    CHECK(result.id == kAnalysisId);
+    CHECK(result.file_info.sha256 ==
+          "275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f");
+
+    // Invalid URL → VtError before HTTP.
+    bool bad_url = false;
+    try {
+        vt.scan_url("");
+    } catch (const vtapi::VtError&) {
+        bad_url = true;
+    }
+    CHECK(bad_url);
+    bool bad_url2 = false;
+    try {
+        vt.scan_url("not-a-url");
+    } catch (const vtapi::VtError&) {
+        bad_url2 = true;
+    }
+    CHECK(bad_url2);
+}
+
+void test_rescan_url() {
+    const std::string kKey(64, 'a');
+    vtapi::ClientOptions opt;
+    opt.api_key = kKey;
+    opt.verify_ssl = false;
+    opt.timeout = std::chrono::seconds(5);
+    opt.requests_per_minute = 0.0;
+
+    MockServer server([](const MockRequest& req) -> MockResponse {
+        if (req.method != "POST" || req.path != "/urls/aHR0cHM6Ly9leGFtcGxlLmNvbQ/analyse")
+            return {400, "bad"};
+        return {200, load_fixture("scan_result.json"), "application/json"};
+    });
+    opt.base_url = server.url("");
+    vtapi::VirusTotal vt{opt};
+    const vtapi::ScanResult result = vt.rescan_url("https://example.com");
+    CHECK(!result.id.empty());
+
+    bool bad = false;
+    try {
+        vt.rescan_url("bad");
+    } catch (const vtapi::VtError&) {
+        bad = true;
+    }
+    CHECK(bad);
+}
+
+void test_url_comments_votes() {
+    const std::string kKey(64, 'a');
+    vtapi::ClientOptions opt;
+    opt.api_key = kKey;
+    opt.verify_ssl = false;
+    opt.timeout = std::chrono::seconds(5);
+    opt.requests_per_minute = 0.0;
+
+    // Mock: GET /urls/{id}/comments returns list; POST /votes accepts verdict.
+    MockServer server([](const MockRequest& req) -> MockResponse {
+        if (req.method == "GET" && req.path.find("/comments") != std::string::npos)
+            return {200, R"({"data":[{"id":"c1","attributes":{"text":"hello"}}]})", "application/json"};
+        if (req.method == "POST" && req.path.find("/votes") != std::string::npos)
+            return {200, "{}", "application/json"};
+        return {404, "{}"};
+    });
+    opt.base_url = server.url("");
+    vtapi::VirusTotal vt{opt};
+
+    // get_url_comments returns JSON string
+    const std::string comments = vt.get_url_comments("https://example.com");
+    CHECK(!comments.empty());
+
+    // post_url_comment + vote (no exception = pass through mock)
+    vt.post_url_comment("https://example.com", "test note");
+    vt.post_url_vote("https://example.com", true);
+
+    // get_url_relationships
+    const std::string rels = vt.get_url_relationships("https://example.com", "contacted_urls");
+    CHECK(rels == "{}");
+}
+
 void test_get_file_report() {
     const std::string kKey(64, 'a');
     const std::string kSha256 =
@@ -691,8 +847,12 @@ void test_scan_file_path() {
         return opt;
     };
 
-    // Write an EICAR file into a temp dir with a subpath, so the mock verifies
-    // the upload name is the basename, not the full path.
+    // Write a benign nonce file into a temp dir with a subpath, so the mock
+    // verifies the upload name is the basename, not the full path. Real EICAR
+    // bytes are avoided on disk here: antivirus (e.g. Windows Defender)
+    // quarantines the file mid-test and makes the run flaky. The bytes are
+    // irrelevant to what this test checks (path handling), only round-trip
+    // equality matters. In-memory EICAR vectors still cover the data overload.
     const std::filesystem::path temp =
         std::filesystem::temp_directory_path() /
         ("vtapi_scan_file_test_" +
@@ -700,15 +860,14 @@ void test_scan_file_path() {
                             .time_since_epoch()
                             .count()));
     std::filesystem::create_directories(temp / "sub");
-    const std::filesystem::path file_path = temp / "sub" / "eicar.com";
-    const std::string eicar =
-        "X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*";
+    const std::filesystem::path file_path = temp / "sub" / "sample.bin";
+    const std::string payload = "vtapi-path-upload-test";
     {
         std::ofstream out(file_path, std::ios::binary);
-        out << eicar;
+        out << payload;
     }
 
-    // Handler re-checks the uploaded bytes against the EICAR vector.
+    // Handler re-checks the uploaded bytes against what was written.
     MockServer server([&](const MockRequest& req) -> MockResponse {
         if (req.method != "POST" || req.path != "/files")
             return {400, "bad request"};
@@ -716,8 +875,8 @@ void test_scan_file_path() {
         if (key == req.headers.end() || key->second != kKey)
             return {403, "bad key"};
         if (req.files.size() != 1 || req.files[0].field != "file" ||
-            req.files[0].filename != "eicar.com" ||
-            std::string(req.files[0].data.begin(), req.files[0].data.end()) != eicar)
+            req.files[0].filename != "sample.bin" ||
+            std::string(req.files[0].data.begin(), req.files[0].data.end()) != payload)
             return {400, "bad file part"};
         return {200, load_fixture("scan_result.json"), "application/json"};
     });
@@ -725,7 +884,7 @@ void test_scan_file_path() {
     const vtapi::ScanResult result = vt.scan_file(file_path.string());
     CHECK(result.file_info.sha256 ==
           "275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f");
-    CHECK(result.file_info.name == "eicar.com");
+    CHECK(result.file_info.name == "eicar.com"); // fixture's meta, not the upload name
 
     // A nonexistent path throws VtError without reaching the server.
     bool server_hit2 = false;
@@ -1821,6 +1980,10 @@ int main() {
     test_file_report();
     test_scan_result();
     test_get_file_report();
+    test_url_report();
+    test_scan_url();
+    test_rescan_url();
+    test_url_comments_votes();
     test_scan_file();
     test_scan_file_path();
     test_scan_large_file();

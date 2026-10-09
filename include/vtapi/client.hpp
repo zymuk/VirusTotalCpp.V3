@@ -10,6 +10,7 @@
 #include "vtapi/detail/ratelimit.hpp"
 #include "vtapi/model/behaviour.hpp"
 #include "vtapi/model/file_report.hpp"
+#include "vtapi/model/url_report.hpp"
 #include "vtapi/model/mitre.hpp"
 #include "vtapi/model/relationship.hpp"
 #include "vtapi/model/scan_result.hpp"
@@ -136,6 +137,19 @@ public:
     // The response groups tactics per sandbox name; the trees are kept nested
     // like v3 returns them rather than flattened into one collection.
     MitreSummary get_mitre_summary(const std::string& hash);
+
+    // URL scan (POST /urls). Returns a ScanResult carrying the analysis id
+    // (poll with M1's get_file_report or await with M8's await_analysis).
+    ScanResult scan_url(const std::string& url);
+    UrlReport get_url_report(const std::string& url_or_id,
+                             bool scan_if_no_report = false);
+    ScanResult rescan_url(const std::string& url_or_id);
+    // URL comments / votes / relationships (reuse M8 generic template).
+    std::string get_url_comments(const std::string& url_or_id);
+    void post_url_comment(const std::string& url_or_id, const std::string& text);
+    void post_url_vote(const std::string& url_or_id, bool positive);
+    std::string get_url_relationships(const std::string& url_or_id,
+                                      const std::string& relationship);
 
 private:
     detail::HttpClient http_;

@@ -89,6 +89,7 @@ add_library(vtapi
   src/relationship.cpp
   src/sigma_rule.cpp
   src/yara_ruleset.cpp
+  src/url_report.cpp
   src/client.cpp
 )
 add_library(vtapi::vtapi ALIAS vtapi)
@@ -122,6 +123,11 @@ if(VTAPI_BUILD_TESTS)
   enable_testing()
   add_executable(vtapi_tests tests/run_tests.cpp)
   target_link_libraries(vtapi_tests PRIVATE vtapi)
+  # The mock server talks Winsock directly; MSVC happens to pull ws2_32 in
+  # transitively via the curl import lib, MinGW does not — link it explicitly.
+  if(WIN32)
+    target_link_libraries(vtapi_tests PRIVATE ws2_32)
+  endif()
   # The tests that spawn the CLI use fork/exec and are POSIX only, so the path
   # is only needed (and only defined) off Windows.
   if(NOT WIN32)

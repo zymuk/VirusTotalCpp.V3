@@ -1,0 +1,33 @@
+{
+  "data": {
+    "type": "url",
+    "id": "aHR0cHM6Ly9leGFtcGxlLmNvbQ",
+    "attributes": {
+      "url": "https://example.com",
+      "last_analysis_date": 1653654377,
+      "last_modification_date": 1653654377,
+      "times_submitted": 1,
+      "reputation": 0,
+      "last_analysis_stats": {
+        "harmless": 10,
+        "malicious": 50,
+        "suspicious": 0,
+        "timeout": 0,
+        "undetected": 5,
+        "type-unsupported": 0
+      },
+      "last_analysis_results": {
+        "EngineA": {
+          "category": "malicious",
+          "engine_name": "EngineA",
+          "engine_version": "2.0",
+          "engine_update": "20230101",
+          "result": "Phishing"
+        }
+      }
+    },
+    "links": {
+      "self": "https://www.virustotal.com/api/v3/urls/aHR0cHM6Ly9leGFtcGxlLmNvbQ"
+    }
+  }
+}

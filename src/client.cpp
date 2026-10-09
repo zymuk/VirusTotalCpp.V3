@@ -301,4 +301,89 @@ MitreSummary VirusTotal::get_mitre_summary(const std::string& hash) {
     return mitre_summary_from_json(detail::json_or_throw(resp));
 }
 
+ScanResult VirusTotal::scan_url(const std::string& url) {
+    if (url.empty() || url.find("://") == std::string::npos)
+        throw VtError("invalid url: must contain ://");
+
+    limiter_.wait();
+    const detail::HttpResponse resp = http_.post_multipart(
+        base_url_ + "/urls",
+        {{"url", url}},
+        {});
+    return scan_result_from_json(detail::json_or_throw(resp));
+}
+
+UrlReport VirusTotal::get_url_report(const std::string& url_or_id,
+                                     bool scan_if_no_report) {
+    std::string id = url_or_id;
+    if (url_or_id.find("://") != std::string::npos) {
+        id = detail::base64url_encode(url_or_id);
+    }
+
+    limiter_.wait();
+    const detail::HttpResponse resp = http_.get(base_url_ + "/urls/" + id);
+    try {
+        return url_report_from_json(detail::json_or_throw(resp));
+    } catch (const NotFound&) {
+        if (scan_if_no_report) {
+            scan_url(url_or_id);
+            // After scan, retry once; if still missing, throw.
+            limiter_.wait();
+            const detail::HttpResponse retry =
+                http_.get(base_url_ + "/urls/" + id);
+            return url_report_from_json(detail::json_or_throw(retry));
+        }
+        throw;
+    }
+}
+
+ScanResult VirusTotal::rescan_url(const std::string& url_or_id) {
+    std::string id = url_or_id;
+    if (url_or_id.find("://") != std::string::npos) {
+        id = detail::base64url_encode(url_or_id);
+    }
+
+    limiter_.wait();
+    const detail::HttpResponse resp =
+        http_.post(base_url_ + "/urls/" + id + "/analyse", "", "");
+    return scan_result_from_json(detail::json_or_throw(resp));
+}
+
+std::string VirusTotal::get_url_comments(const std::string& url_or_id) {
+    std::string id = url_or_id;
+    if (url_or_id.find("://") != std::string::npos) id = detail::base64url_encode(url_or_id);
+    limiter_.wait();
+    const detail::HttpResponse resp = http_.get(base_url_ + "/urls/" + id + "/comments");
+    return detail::json_or_throw(resp).dump();
+}
+
+void VirusTotal::post_url_comment(const std::string& url_or_id, const std::string& text) {
+    std::string id = url_or_id;
+    if (url_or_id.find("://") != std::string::npos) id = detail::base64url_encode(url_or_id);
+    limiter_.wait();
+    const detail::HttpResponse resp = http_.post(base_url_ + "/urls/" + id + "/comments",
+        "{\"data\":{\"attributes\":{\"text\":\"" + text + "\"}}}",
+        "application/json");
+    detail::json_or_throw(resp);
+}
+
+void VirusTotal::post_url_vote(const std::string& url_or_id, bool positive) {
+    std::string id = url_or_id;
+    if (url_or_id.find("://") != std::string::npos) id = detail::base64url_encode(url_or_id);
+    limiter_.wait();
+    const detail::HttpResponse resp = http_.post(base_url_ + "/urls/" + id + "/votes",
+        "{\"data\":{\"attributes\":{\"verdict\":\"" + std::string(positive ? "positive" : "negative") + "\"}}}",
+        "application/json");
+    detail::json_or_throw(resp);
+}
+
+std::string VirusTotal::get_url_relationships(const std::string& url_or_id,
+                                              const std::string& relationship) {
+    std::string id = url_or_id;
+    if (url_or_id.find("://") != std::string::npos) id = detail::base64url_encode(url_or_id);
+    limiter_.wait();
+    const detail::HttpResponse resp = http_.get(base_url_ + "/urls/" + id + "/relationships/" + relationship);
+    return detail::json_or_throw(resp).dump();
+}
+
 } // namespace vtapi
