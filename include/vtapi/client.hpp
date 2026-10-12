@@ -141,13 +141,26 @@ public:
     // URL scan (POST /urls). Returns a ScanResult carrying the analysis id
     // (poll with M1's get_file_report or await with M8's await_analysis).
     ScanResult scan_url(const std::string& url);
+
+    // Public virustotal.com analysis-page link for a URL (no HTTP call).
+    std::string get_public_url_scan_link(const std::string& url);
+
+    // Loop wrapper around scan_url (v3 has no batch endpoint, so each URL costs
+    // one request). All URLs are validated before any request is made.
+    std::vector<ScanResult> scan_urls(const std::vector<std::string>& urls);
     UrlReport get_url_report(const std::string& url_or_id,
                              bool scan_if_no_report = false);
+
+    // Loop wrapper around get_url_report (mimics the old v2 batch call for
+    // callers used to it). A URL VirusTotal has never seen throws NotFound.
+    std::vector<UrlReport> get_url_reports(const std::vector<std::string>& urls);
+
     ScanResult rescan_url(const std::string& url_or_id);
     // URL comments / votes / relationships (reuse M8 generic template).
     std::string get_url_comments(const std::string& url_or_id);
     void post_url_comment(const std::string& url_or_id, const std::string& text);
     void post_url_vote(const std::string& url_or_id, bool positive);
+    std::string get_url_votes(const std::string& url_or_id);
     std::string get_url_relationships(const std::string& url_or_id,
                                       const std::string& relationship);
 

@@ -313,6 +313,32 @@ ScanResult VirusTotal::scan_url(const std::string& url) {
     return scan_result_from_json(detail::json_or_throw(resp));
 }
 
+std::string VirusTotal::get_public_url_scan_link(const std::string& url) {
+    if (url.empty() || url.find("://") == std::string::npos)
+        throw VtError("invalid url: must contain ://");
+    return "https://www.virustotal.com/gui/url/" +
+           detail::base64url_encode(url) + "/detection";
+}
+
+namespace {
+
+void require_valid_urls(const std::vector<std::string>& urls) {
+    for (const auto& url : urls)
+        if (url.empty() || url.find("://") == std::string::npos)
+            throw VtError("invalid url in list: must contain ://");
+}
+
+} // namespace
+
+std::vector<ScanResult> VirusTotal::scan_urls(const std::vector<std::string>& urls) {
+    require_valid_urls(urls);
+    std::vector<ScanResult> out;
+    out.reserve(urls.size());
+    for (const auto& url : urls)
+        out.push_back(scan_url(url));
+    return out;
+}
+
 UrlReport VirusTotal::get_url_report(const std::string& url_or_id,
                                      bool scan_if_no_report) {
     std::string id = url_or_id;
@@ -335,6 +361,15 @@ UrlReport VirusTotal::get_url_report(const std::string& url_or_id,
         }
         throw;
     }
+}
+
+std::vector<UrlReport> VirusTotal::get_url_reports(const std::vector<std::string>& urls) {
+    require_valid_urls(urls);
+    std::vector<UrlReport> out;
+    out.reserve(urls.size());
+    for (const auto& url : urls)
+        out.push_back(get_url_report(url));
+    return out;
 }
 
 ScanResult VirusTotal::rescan_url(const std::string& url_or_id) {
@@ -375,6 +410,14 @@ void VirusTotal::post_url_vote(const std::string& url_or_id, bool positive) {
         "{\"data\":{\"attributes\":{\"verdict\":\"" + std::string(positive ? "positive" : "negative") + "\"}}}",
         "application/json");
     detail::json_or_throw(resp);
+}
+
+std::string VirusTotal::get_url_votes(const std::string& url_or_id) {
+    std::string id = url_or_id;
+    if (url_or_id.find("://") != std::string::npos) id = detail::base64url_encode(url_or_id);
+    limiter_.wait();
+    const detail::HttpResponse resp = http_.get(base_url_ + "/urls/" + id + "/votes");
+    return detail::json_or_throw(resp).dump();
 }
 
 std::string VirusTotal::get_url_relationships(const std::string& url_or_id,

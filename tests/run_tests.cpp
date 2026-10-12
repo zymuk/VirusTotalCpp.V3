@@ -519,11 +519,19 @@ void test_url_comments_votes() {
     opt.timeout = std::chrono::seconds(5);
     opt.requests_per_minute = 0.0;
 
-    // Mock: GET /urls/{id}/comments returns list; POST /votes accepts verdict.
+    // Mock: GET/POST /urls/{id}/comments|votes + GET relationships all return
+    // 200. Matching by path substring because the base64url id varies.
     MockServer server([](const MockRequest& req) -> MockResponse {
-        if (req.method == "GET" && req.path.find("/comments") != std::string::npos)
-            return {200, R"({"data":[{"id":"c1","attributes":{"text":"hello"}}]})", "application/json"};
-        if (req.method == "POST" && req.path.find("/votes") != std::string::npos)
+        if (req.path.find("/comments") != std::string::npos) {
+            if (req.method == "GET")
+                return {200, R"({"data":[{"id":"c1","attributes":{"text":"hello"}}]})", "application/json"};
+            if (req.method == "POST")
+                return {200, "{}", "application/json"};
+        }
+        if (req.path.find("/votes") != std::string::npos &&
+            (req.method == "GET" || req.method == "POST"))
+            return {200, R"({"data":[{"id":"v1","attributes":{"verdict":"positive"}}]})", "application/json"};
+        if (req.method == "GET" && req.path.find("/relationships") != std::string::npos)
             return {200, "{}", "application/json"};
         return {404, "{}"};
     });
@@ -534,13 +542,110 @@ void test_url_comments_votes() {
     const std::string comments = vt.get_url_comments("https://example.com");
     CHECK(!comments.empty());
 
-    // post_url_comment + vote (no exception = pass through mock)
+    // post_url_comment + vote + get_url_votes (no exception = pass through mock)
     vt.post_url_comment("https://example.com", "test note");
     vt.post_url_vote("https://example.com", true);
+    const std::string votes = vt.get_url_votes("https://example.com");
+    CHECK(!votes.empty());
 
     // get_url_relationships
     const std::string rels = vt.get_url_relationships("https://example.com", "contacted_urls");
     CHECK(rels == "{}");
+}
+
+void test_scan_urls() {
+    const std::string kKey(64, 'a');
+    vtapi::ClientOptions opt;
+    opt.api_key = kKey;
+    opt.verify_ssl = false;
+    opt.timeout = std::chrono::seconds(5);
+    opt.requests_per_minute = 0.0;
+
+    // Mock counts POST /urls; returns a queued analysis for any valid scan.
+    int posted = 0;
+    MockServer server([&posted](const MockRequest& req) -> MockResponse {
+        if (req.method != "POST" || req.path != "/urls")
+            return {400, "bad"};
+        ++posted;
+        return {200, load_fixture("scan_result.json"), "application/json"};
+    });
+    opt.base_url = server.url("");
+    vtapi::VirusTotal vt{opt};
+
+    const std::vector<vtapi::ScanResult> results =
+        vt.scan_urls({"https://example.com", "https://example.org", "https://example.net"});
+    CHECK(results.size() == 3);
+    CHECK(posted == 3);
+    CHECK(!results[0].id.empty() && !results[2].id.empty());
+
+    // Invalid URL anywhere in the list → VtError before any HTTP request.
+    int hits = 0;
+    MockServer junk_server([&hits](const MockRequest&) -> MockResponse {
+        ++hits;
+        return {200, load_fixture("scan_result.json"), "application/json"};
+    });
+    opt.base_url = junk_server.url("");
+    vtapi::VirusTotal junk{opt};
+    bool bad = false;
+    try {
+        junk.scan_urls({"https://example.com", "not-a-url"});
+    } catch (const vtapi::VtError&) {
+        bad = true;
+    }
+    CHECK(bad);
+    CHECK(hits == 0);
+}
+
+void test_url_reports() {
+    const std::string kKey(64, 'a');
+    vtapi::ClientOptions opt;
+    opt.api_key = kKey;
+    opt.verify_ssl = false;
+    opt.timeout = std::chrono::seconds(5);
+    opt.requests_per_minute = 0.0;
+
+    // Mock serves the canonical url_report for any GET /urls/{id}.
+    MockServer server([](const MockRequest& req) -> MockResponse {
+        if (req.method != "GET" || req.path.rfind("/urls/", 0) != 0)
+            return {400, "bad"};
+        return {200, load_fixture("url_report.json"), "application/json"};
+    });
+    opt.base_url = server.url("");
+    vtapi::VirusTotal vt{opt};
+
+    const std::vector<vtapi::UrlReport> reports =
+        vt.get_url_reports({"https://example.com", "https://example.org"});
+    CHECK(reports.size() == 2);
+    CHECK(reports[0].id == "aHR0cHM6Ly9leGFtcGxlLmNvbQ");
+    CHECK(reports[0].url == "https://example.com");
+
+    // Invalid URL anywhere in the list → VtError before any HTTP request.
+    int hits = 0;
+    MockServer junk_server([&hits](const MockRequest&) -> MockResponse {
+        ++hits;
+        return {200, load_fixture("url_report.json"), "application/json"};
+    });
+    opt.base_url = junk_server.url("");
+    vtapi::VirusTotal junk{opt};
+    bool bad = false;
+    try {
+        junk.get_url_reports({"https://example.com", "not-a-url"});
+    } catch (const vtapi::VtError&) {
+        bad = true;
+    }
+    CHECK(bad);
+    CHECK(hits == 0);
+
+    // Public URL scan link: built locally, id is the base64url encoding.
+    CHECK(vt.get_public_url_scan_link("https://example.com") ==
+          "https://www.virustotal.com/gui/url/aHR0cHM6Ly9leGFtcGxlLmNvbQ/detection");
+    bool bad_url = false;
+    try {
+        vt.get_public_url_scan_link("not-a-url");
+    } catch (const vtapi::VtError&) {
+        bad_url = true;
+    }
+    CHECK(bad_url);
 }
 
 void test_get_file_report() {
@@ -1982,6 +2087,8 @@ int main() {
     test_get_file_report();
     test_url_report();
     test_scan_url();
+    test_scan_urls();
+    test_url_reports();
     test_rescan_url();
     test_url_comments_votes();
     test_scan_file();

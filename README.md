@@ -5,9 +5,10 @@ surface of [VirusTotalNet](https://github.com/Genbox/VirusTotalNet) (C#, API v2)
 
 The **v1.2.x** releases build on the v1.0.0 file check-then-scan flow and add the
 rest of the file API: large scans, downloads, rescanning, behaviour reports,
-Sigma/YARA rules, MITRE summaries and file relationships.
+Sigma/YARA rules, MITRE summaries and file relationships. **v1.3.0** adds the URL
+API: scanning, reports, rescanning, comments, votes and relationships.
 
-## Status - v1.2.0
+## Status - v1.3.0
 
 Implemented:
 
@@ -22,11 +23,18 @@ Implemented:
 - behaviour reports: list, summary, single report, HTML/EVTX/PCAP/memory-dump
 - Sigma rules, YARA rulesets, MITRE ATT&CK summaries, file relationships
 - `get_public_file_scan_link(hash)` - the public virustotal.com report URL
-- CLI `vtapi_eicar` - drive the file flow from a shell
+- `scan_url(url)` / `scan_urls(urls)` - submit URL(s) for scanning
+- `get_url_report(url_or_id, scan_if_no_report = false)` - URL report; optionally
+  scans first if VirusTotal has never seen the URL
+- `get_url_reports(urls)` - loop over `get_url_report`
+- `get_public_url_scan_link(url)` - the public virustotal.com report URL
+- `rescan_url(url_or_id)` - request a fresh URL analysis
+- URL comments (list/add), votes (list/add) and relationships
+- CLI `vtapi_eicar` - drive the file and URL flows from a shell
 
 Planned for later releases:
 
-- URLs, IP addresses and domains: report, rescan
+- IP addresses and domains: report, rescan
 - Comments: list and add per object type
 - Analysis polling (`GET /analyses/{id}`)
 
@@ -154,6 +162,17 @@ arguments prints the usage. Exit codes: `0` success, `1` runtime error,
 | `YaraRuleset get_yara_ruleset(id)` | `GET /yara_rulesets/{id}` |
 | `MitreSummary get_mitre_summary(hash)` | `GET /files/{id}/behaviour_mitre_trees` |
 | `RelationshipList get_file_relationships(hash, rel)` | `GET /files/{id}/relationships/{rel}` |
+| `ScanResult scan_url(url)` | `POST /urls` |
+| `std::vector<ScanResult> scan_urls(urls)` | loop `POST /urls` |
+| `std::string get_public_url_scan_link(url)` | no request - builds `https://www.virustotal.com/gui/url/{base64url}/detection` |
+| `UrlReport get_url_report(url_or_id, scan_if_no_report = false)` | `GET /urls/{id}` (`id` = base64url of the URL, unpadded) |
+| `std::vector<UrlReport> get_url_reports(urls)` | loop `GET /urls/{id}` |
+| `ScanResult rescan_url(url_or_id)` | `POST /urls/{id}/analyse` |
+| `std::string get_url_comments(url_or_id)` | `GET /urls/{id}/comments` |
+| `void post_url_comment(url_or_id, text)` | `POST /urls/{id}/comments` |
+| `void post_url_vote(url_or_id, positive)` | `POST /urls/{id}/votes` |
+| `std::string get_url_votes(url_or_id)` | `GET /urls/{id}/votes` |
+| `std::string get_url_relationships(url_or_id, rel)` | `GET /urls/{id}/relationships/{rel}` |
 
 The response models match the v3 JSON payloads (`FileReport` from
 `data.attributes.*`, `ScanResult` from `data.*` plus `meta.file_info.*`). Field
