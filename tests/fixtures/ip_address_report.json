@@ -1,0 +1,64 @@
+{
+  "data": {
+    "type": "ip_address",
+    "id": "8.8.8.8",
+    "attributes": {
+      "as_owner": "Google LLC",
+      "asn": 15169,
+      "continent": "NA",
+      "country": "US",
+      "network": "8.8.8.0/24",
+      "regional_internet_registry": "ARIN",
+      "first_seen_date": 1528408800,
+      "last_analysis_date": 1653654377,
+      "last_modification_date": 1653654377,
+      "whois_date": 1653654377,
+      "reputation": 289,
+      "tags": ["ipv4", "dns-server"],
+      "total_votes": {
+        "harmless": 31,
+        "malicious": 1
+      },
+      "last_analysis_stats": {
+        "harmless": 10,
+        "malicious": 50,
+        "suspicious": 0,
+        "timeout": 0,
+        "undetected": 5,
+        "type-unsupported": 0
+      },
+      "last_analysis_results": {
+        "EngineA": {
+          "category": "malicious",
+          "engine_name": "EngineA",
+          "engine_version": "2.0",
+          "engine_update": "20230101",
+          "result": "Malicious site"
+        }
+      },
+      "last_dns_records": [
+        {
+          "type": "resolution",
+          "id": "8.8.8.8_dns.google",
+          "attributes": {
+            "hostname": "dns.google",
+            "ip_address": "8.8.8.8",
+            "last_resolved": 1653654377
+          }
+        },
+        {
+          "type": "resolution",
+          "id": "8.8.8.8_www.google.com",
+          "attributes": {
+            "hostname": "www.google.com",
+            "ip_address": "8.8.8.8",
+            "last_resolved": 1653481577
+          }
+        }
+      ]
+    },
+    "links": {
+      "self": "https://www.virustotal.com/api/v3/ip_addresses/8.8.8.8"
+    }
+  }
+}

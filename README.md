@@ -6,9 +6,10 @@ surface of [VirusTotalNet](https://github.com/Genbox/VirusTotalNet) (C#, API v2)
 The **v1.2.x** releases build on the v1.0.0 file check-then-scan flow and add the
 rest of the file API: large scans, downloads, rescanning, behaviour reports,
 Sigma/YARA rules, MITRE summaries and file relationships. **v1.3.0** adds the URL
-API: scanning, reports, rescanning, comments, votes and relationships.
+API: scanning, reports, rescanning, comments, votes and relationships. **v1.4.0**
+adds the IP address API: reports, rescanning, comments, votes and relationships.
 
-## Status - v1.3.0
+## Status - v1.4.0
 
 Implemented:
 
@@ -30,11 +31,14 @@ Implemented:
 - `get_public_url_scan_link(url)` - the public virustotal.com report URL
 - `rescan_url(url_or_id)` - request a fresh URL analysis
 - URL comments (list/add), votes (list/add) and relationships
+- `get_ip_report(ip)` - IP address report (`GET /ip_addresses/{id}`)
+- `rescan_ip(ip)` - request a fresh IP analysis
+- IP comments (list/add), votes (list/add) and relationships
 - CLI `vtapi_eicar` - drive the file and URL flows from a shell
 
 Planned for later releases:
 
-- IP addresses and domains: report, rescan
+- Domains: report, rescan
 - Comments: list and add per object type
 - Analysis polling (`GET /analyses/{id}`)
 
@@ -173,10 +177,18 @@ arguments prints the usage. Exit codes: `0` success, `1` runtime error,
 | `void post_url_vote(url_or_id, positive)` | `POST /urls/{id}/votes` |
 | `std::string get_url_votes(url_or_id)` | `GET /urls/{id}/votes` |
 | `std::string get_url_relationships(url_or_id, rel)` | `GET /urls/{id}/relationships/{rel}` |
+| `IPReport get_ip_report(ip)` | `GET /ip_addresses/{id}` (`id` = the IP address) |
+| `ScanResult rescan_ip(ip)` | `POST /ip_addresses/{id}/analyse` |
+| `std::string get_ip_comments(ip)` | `GET /ip_addresses/{id}/comments` |
+| `void post_ip_comment(ip, text)` | `POST /ip_addresses/{id}/comments` |
+| `void post_ip_vote(ip, positive)` | `POST /ip_addresses/{id}/votes` |
+| `std::string get_ip_votes(ip)` | `GET /ip_addresses/{id}/votes` |
+| `std::string get_ip_relationships(ip, rel)` | `GET /ip_addresses/{id}/relationships/{rel}` |
 
 The response models match the v3 JSON payloads (`FileReport` from
-`data.attributes.*`, `ScanResult` from `data.*` plus `meta.file_info.*`). Field
-names and types follow the real API rather than another client library.
+`data.attributes.*`, `ScanResult` from `data.*` plus `meta.file_info.*`,
+`IPReport` from `data.attributes.*`). Field names and types follow the real API
+rather than another client library.
 
 ## Errors
 

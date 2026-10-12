@@ -10,6 +10,7 @@
 #include "vtapi/detail/ratelimit.hpp"
 #include "vtapi/model/behaviour.hpp"
 #include "vtapi/model/file_report.hpp"
+#include "vtapi/model/ip_report.hpp"
 #include "vtapi/model/url_report.hpp"
 #include "vtapi/model/mitre.hpp"
 #include "vtapi/model/relationship.hpp"
@@ -163,6 +164,22 @@ public:
     std::string get_url_votes(const std::string& url_or_id);
     std::string get_url_relationships(const std::string& url_or_id,
                                       const std::string& relationship);
+
+    // IP address report (GET /ip_addresses/{id}). id is the IP itself; v3 has
+    // no batch endpoint, so callers repeat this per address.
+    IPReport get_ip_report(const std::string& ip);
+
+    // Re-runs the IP analysis (POST /ip_addresses/{id}/analyse). Returns the
+    // new analysis unit; poll with get_ip_report.
+    ScanResult rescan_ip(const std::string& ip);
+
+    // IP comments / votes / relationships (reuse M8 generic template).
+    std::string get_ip_comments(const std::string& ip);
+    void post_ip_comment(const std::string& ip, const std::string& text);
+    void post_ip_vote(const std::string& ip, bool positive);
+    std::string get_ip_votes(const std::string& ip);
+    std::string get_ip_relationships(const std::string& ip,
+                                     const std::string& relationship);
 
 private:
     detail::HttpClient http_;

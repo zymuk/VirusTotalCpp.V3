@@ -90,6 +90,7 @@ add_library(vtapi
   src/sigma_rule.cpp
   src/yara_ruleset.cpp
   src/url_report.cpp
+  src/ip_report.cpp
   src/client.cpp
 )
 add_library(vtapi::vtapi ALIAS vtapi)

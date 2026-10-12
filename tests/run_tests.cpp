@@ -26,6 +26,7 @@
 #include "vtapi/detail/url.hpp"
 #include "vtapi/model/behaviour.hpp"
 #include "vtapi/model/file_report.hpp"
+#include "vtapi/model/ip_report.hpp"
 #include "vtapi/model/mitre.hpp"
 #include "vtapi/model/relationship.hpp"
 #include "vtapi/model/scan_result.hpp"
@@ -440,6 +441,216 @@ void test_url_report() {
     // Non-object root tolerated (empty report).
     const vtapi::UrlReport weird = vtapi::url_report_from_json(nlohmann::json::array());
     CHECK(weird.id.empty());
+}
+
+void test_ip_report() {
+    // Canonical IP report parses into a fully-populated IPReport.
+    const nlohmann::json root =
+        nlohmann::json::parse(load_fixture("ip_address_report.json"));
+    const vtapi::IPReport report = vtapi::ip_report_from_json(root);
+
+    // data.* carries the IP as id (no "resolutions"/"response_code" v2 shape).
+    CHECK(report.type == "ip_address");
+    CHECK(report.id == "8.8.8.8");
+    CHECK(report.self_link == "https://www.virustotal.com/api/v3/ip_addresses/8.8.8.8");
+
+    // data.attributes.* surfaces with v3 names.
+    CHECK(report.as_owner == "Google LLC");
+    CHECK(report.asn == 15169);
+    CHECK(report.continent == "NA");
+    CHECK(report.country == "US");
+    CHECK(report.network == "8.8.8.0/24");
+    CHECK(report.regional_internet_registry == "ARIN");
+    CHECK(report.first_seen_date == 1528408800);
+    CHECK(report.last_analysis_date == 1653654377);
+    CHECK(report.last_modification_date == 1653654377);
+    CHECK(report.whois_date == 1653654377);
+    CHECK(report.reputation == 289);
+
+    CHECK(report.tags.size() == 2);
+    CHECK(report.tags[0] == "ipv4");
+    CHECK(report.tags[1] == "dns-server");
+
+    CHECK(report.total_votes.harmless == 31);
+    CHECK(report.total_votes.malicious == 1);
+
+    const vtapi::AnalysisStats& stats = report.last_analysis_stats;
+    CHECK(stats.harmless == 10);
+    CHECK(stats.malicious == 50);
+    CHECK(stats.suspicious == 0);
+    CHECK(stats.timeout == 0);
+    CHECK(stats.undetected == 5);
+    CHECK(stats.type_unsupported == 0);
+
+    CHECK(report.last_analysis_results.size() == 1);
+    const auto flagged = report.last_analysis_results.find("EngineA");
+    CHECK(flagged != report.last_analysis_results.end());
+    if (flagged != report.last_analysis_results.end()) {
+        CHECK(flagged->second.category == "malicious");
+        CHECK(flagged->second.result == "Malicious site");
+        CHECK(flagged->second.engine_name == "EngineA");
+        CHECK(flagged->second.engine_version == "2.0");
+        CHECK(flagged->second.engine_update == "20230101");
+    }
+
+    // last_dns_records entries land as DNSResolution objects.
+    CHECK(report.last_dns_records.size() == 2);
+    CHECK(report.last_dns_records[0].ip_address == "8.8.8.8");
+    CHECK(report.last_dns_records[0].hostname == "dns.google");
+    CHECK(report.last_dns_records[0].last_resolved == 1653654377);
+    CHECK(report.last_dns_records[1].hostname == "www.google.com");
+
+    // Sparse fixture: missing fields fall back to defaults without throwing.
+    const vtapi::IPReport sparse =
+        vtapi::ip_report_from_json(nlohmann::json::parse(R"({"data":{"id":"1.2.3.4"}})"));
+    CHECK(sparse.id == "1.2.3.4");
+    CHECK(sparse.type.empty());
+    CHECK(sparse.self_link.empty());
+    CHECK(sparse.as_owner.empty());
+    CHECK(sparse.asn == 0);
+    CHECK(sparse.country.empty());
+    CHECK(sparse.reputation == 0);
+    CHECK(sparse.tags.empty());
+    CHECK(sparse.total_votes.malicious == 0);
+    CHECK(sparse.last_analysis_stats.malicious == 0);
+    CHECK(sparse.last_analysis_results.empty());
+    CHECK(sparse.last_dns_records.empty());
+
+    // Non-object root tolerated (empty report).
+    const vtapi::IPReport weird = vtapi::ip_report_from_json(nlohmann::json::array());
+    CHECK(weird.id.empty());
+}
+
+void test_get_ip_report() {
+    const std::string kKey(64, 'a');
+    const std::string kIp = "8.8.8.8";
+
+    auto options = [&](const std::string& base_url) {
+        vtapi::ClientOptions opt;
+        opt.api_key = kKey;
+        opt.base_url = base_url;
+        opt.verify_ssl = false;
+        opt.timeout = std::chrono::seconds(5);
+        opt.requests_per_minute = 0.0; // disable pacing for tests
+        return opt;
+    };
+
+    // 200 → full IPReport (and the api key header is sent).
+    MockServer ok_server([&](const MockRequest& req) -> MockResponse {
+        const auto key = req.headers.find("x-apikey");
+        if (key == req.headers.end() || key->second != kKey)
+            return {403, "bad key"};
+        if (req.path != "/ip_addresses/" + kIp)
+            return {404, "wrong path"};
+        return {200, load_fixture("ip_address_report.json"), "application/json"};
+    });
+    vtapi::VirusTotal vt{options(ok_server.url(""))};
+    const vtapi::IPReport report = vt.get_ip_report(kIp);
+    CHECK(report.id == kIp);
+    CHECK(report.as_owner == "Google LLC");
+    CHECK(report.asn == 15169);
+    CHECK(report.last_dns_records.size() == 2);
+    CHECK(report.last_analysis_stats.malicious == 50);
+
+    // 404 → NotFound ("no data for this IP yet").
+    MockServer nf_server([](const MockRequest&) -> MockResponse {
+        return {404, R"({"error":{"code":"NotFoundError","message":"IP address not found"}})",
+                "application/json"};
+    });
+    vtapi::VirusTotal not_found{options(nf_server.url(""))};
+    CHECK_THROWS_AS(not_found.get_ip_report(kIp), vtapi::NotFound);
+
+    // Invalid IP (hostname, junk, empty) → VtError before any HTTP request.
+    MockServer junk_server([](const MockRequest&) -> MockResponse {
+        return {200, "{}", "application/json"};
+    });
+    vtapi::VirusTotal junk{options(junk_server.url(""))};
+    bool rejected = false;
+    try {
+        junk.get_ip_report("example.com");
+    } catch (const vtapi::VtError&) {
+        rejected = true;
+    }
+    CHECK(rejected);
+    CHECK_THROWS_AS(junk.get_ip_report("not-an-ip"), vtapi::VtError);
+    CHECK_THROWS_AS(junk.get_ip_report(""), vtapi::VtError);
+    // As long as it is still an IP, the request happens.
+    CHECK_THROWS_AS(not_found.get_ip_report("1.2.3.4"), vtapi::NotFound);
+}
+
+void test_rescan_ip() {
+    const std::string kKey(64, 'a');
+    vtapi::ClientOptions opt;
+    opt.api_key = kKey;
+    opt.verify_ssl = false;
+    opt.timeout = std::chrono::seconds(5);
+    opt.requests_per_minute = 0.0;
+
+    MockServer server([](const MockRequest& req) -> MockResponse {
+        if (req.method != "POST" || req.path != "/ip_addresses/8.8.8.8/analyse")
+            return {400, "bad"};
+        return {200, load_fixture("scan_result.json"), "application/json"};
+    });
+    opt.base_url = server.url("");
+    vtapi::VirusTotal vt{opt};
+    const vtapi::ScanResult result = vt.rescan_ip("8.8.8.8");
+    CHECK(!result.id.empty());
+
+    // Invalid IP → VtError before any HTTP request.
+    bool bad = false;
+    try {
+        vt.rescan_ip("bad");
+    } catch (const vtapi::VtError&) {
+        bad = true;
+    }
+    CHECK(bad);
+}
+
+void test_ip_comments_votes() {
+    const std::string kKey(64, 'a');
+    vtapi::ClientOptions opt;
+    opt.api_key = kKey;
+    opt.verify_ssl = false;
+    opt.timeout = std::chrono::seconds(5);
+    opt.requests_per_minute = 0.0;
+
+    // Mock: GET/POST /ip_addresses/8.8.8.8/comments|votes + GET relationships
+    // all return 200. Matching by path substring keeps the mock short.
+    MockServer server([](const MockRequest& req) -> MockResponse {
+        if (req.path.find("/comments") != std::string::npos) {
+            if (req.method == "GET")
+                return {200, R"({"data":[{"id":"c1","attributes":{"text":"hello"}}]})", "application/json"};
+            if (req.method == "POST")
+                return {200, "{}", "application/json"};
+        }
+        if (req.path.find("/votes") != std::string::npos &&
+            (req.method == "GET" || req.method == "POST"))
+            return {200, R"({"data":[{"id":"v1","attributes":{"verdict":"positive"}}]})", "application/json"};
+        if (req.method == "GET" && req.path.find("/relationships") != std::string::npos)
+            return {200, "{}", "application/json"};
+        return {404, "{}"};
+    });
+    opt.base_url = server.url("");
+    vtapi::VirusTotal vt{opt};
+
+    // Valid IP: get comments returns JSON string; post + vote + get votes pass.
+    const std::string comments = vt.get_ip_comments("8.8.8.8");
+    CHECK(!comments.empty());
+    vt.post_ip_comment("8.8.8.8", "test note");
+    vt.post_ip_vote("8.8.8.8", true);
+    const std::string votes = vt.get_ip_votes("8.8.8.8");
+    CHECK(!votes.empty());
+    const std::string rels = vt.get_ip_relationships("8.8.8.8", "downloaded_files");
+    CHECK(rels == "{}");
+
+    // Invalid IP → VtError before any HTTP request.
+    bool bad = false;
+    try {
+        vt.post_ip_comment("bad", "nope");
+    } catch (const vtapi::VtError&) {
+        bad = true;
+    }
+    CHECK(bad);
 }
 
 void test_scan_url() {
@@ -2086,6 +2297,10 @@ int main() {
     test_scan_result();
     test_get_file_report();
     test_url_report();
+    test_ip_report();
+    test_get_ip_report();
+    test_rescan_ip();
+    test_ip_comments_votes();
     test_scan_url();
     test_scan_urls();
     test_url_reports();

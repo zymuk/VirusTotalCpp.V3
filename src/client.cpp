@@ -328,6 +328,57 @@ void require_valid_urls(const std::vector<std::string>& urls) {
             throw VtError("invalid url in list: must contain ://");
 }
 
+// IPv4 ("1.2.3.4") or IPv6 ("2001:db8::1") literal. Anything else (a hostname,
+// an empty string) cannot address an IP object id, so reject it before the HTTP
+// round-trip. Zone ids ("fe80::1%eth0") are not accepted by the API.
+bool is_valid_ip(const std::string& ip) {
+    if (ip.empty())
+        return false;
+    if (ip.find(':') != std::string::npos) {
+        // IPv6. The ::: uppercase/lowercase scans one pass; a literal may start
+        // with "::" (leading zero run), so allow up to eight hex groups.
+        std::size_t groups = 0;
+        bool in_group = false;
+        for (const char c : ip) {
+            const bool is_hex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
+                                (c >= 'A' && c <= 'F');
+            if (is_hex) {
+                in_group = true;
+            } else if (c == ':') {
+                if (in_group)
+                    ++groups;
+                in_group = false;
+            } else {
+                return false;
+            }
+        }
+        if (in_group)
+            ++groups;
+        return groups >= 1 && groups <= 8;
+    }
+    // IPv4 dotted quad: exactly one dot in each gap, values 0..255.
+    std::size_t octets = 0;
+    int value = 0;
+    int digits = 0;
+    for (const char c : ip) {
+        if (c >= '0' && c <= '9') {
+            value = value * 10 + (c - '0');
+            ++digits;
+            if (digits > 3 || value > 255)
+                return false;
+        } else if (c == '.') {
+            if (digits == 0)
+                return false;
+            ++octets;
+            value = 0;
+            digits = 0;
+        } else {
+            return false;
+        }
+    }
+    return octets == 3 && digits > 0;
+}
+
 } // namespace
 
 std::vector<ScanResult> VirusTotal::scan_urls(const std::vector<std::string>& urls) {
@@ -426,6 +477,69 @@ std::string VirusTotal::get_url_relationships(const std::string& url_or_id,
     if (url_or_id.find("://") != std::string::npos) id = detail::base64url_encode(url_or_id);
     limiter_.wait();
     const detail::HttpResponse resp = http_.get(base_url_ + "/urls/" + id + "/relationships/" + relationship);
+    return detail::json_or_throw(resp).dump();
+}
+
+IPReport VirusTotal::get_ip_report(const std::string& ip) {
+    if (!is_valid_ip(ip))
+        throw VtError("invalid ip address");
+    limiter_.wait();
+    const detail::HttpResponse resp = http_.get(base_url_ + "/ip_addresses/" + ip);
+    return ip_report_from_json(detail::json_or_throw(resp));
+}
+
+ScanResult VirusTotal::rescan_ip(const std::string& ip) {
+    if (!is_valid_ip(ip))
+        throw VtError("invalid ip address");
+    limiter_.wait();
+    const detail::HttpResponse resp =
+        http_.post(base_url_ + "/ip_addresses/" + ip + "/analyse", "", "");
+    return scan_result_from_json(detail::json_or_throw(resp));
+}
+
+std::string VirusTotal::get_ip_comments(const std::string& ip) {
+    if (!is_valid_ip(ip))
+        throw VtError("invalid ip address");
+    limiter_.wait();
+    const detail::HttpResponse resp = http_.get(base_url_ + "/ip_addresses/" + ip + "/comments");
+    return detail::json_or_throw(resp).dump();
+}
+
+void VirusTotal::post_ip_comment(const std::string& ip, const std::string& text) {
+    if (!is_valid_ip(ip))
+        throw VtError("invalid ip address");
+    limiter_.wait();
+    const detail::HttpResponse resp = http_.post(base_url_ + "/ip_addresses/" + ip + "/comments",
+        "{\"data\":{\"attributes\":{\"text\":\"" + text + "\"}}}",
+        "application/json");
+    detail::json_or_throw(resp);
+}
+
+void VirusTotal::post_ip_vote(const std::string& ip, bool positive) {
+    if (!is_valid_ip(ip))
+        throw VtError("invalid ip address");
+    limiter_.wait();
+    const detail::HttpResponse resp = http_.post(base_url_ + "/ip_addresses/" + ip + "/votes",
+        "{\"data\":{\"attributes\":{\"verdict\":\"" + std::string(positive ? "positive" : "negative") + "\"}}}",
+        "application/json");
+    detail::json_or_throw(resp);
+}
+
+std::string VirusTotal::get_ip_votes(const std::string& ip) {
+    if (!is_valid_ip(ip))
+        throw VtError("invalid ip address");
+    limiter_.wait();
+    const detail::HttpResponse resp = http_.get(base_url_ + "/ip_addresses/" + ip + "/votes");
+    return detail::json_or_throw(resp).dump();
+}
+
+std::string VirusTotal::get_ip_relationships(const std::string& ip,
+                                             const std::string& relationship) {
+    if (!is_valid_ip(ip))
+        throw VtError("invalid ip address");
+    limiter_.wait();
+    const detail::HttpResponse resp =
+        http_.get(base_url_ + "/ip_addresses/" + ip + "/relationships/" + relationship);
     return detail::json_or_throw(resp).dump();
 }
 
