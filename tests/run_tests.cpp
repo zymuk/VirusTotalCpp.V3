@@ -25,10 +25,12 @@
 #include "vtapi/detail/response.hpp"
 #include "vtapi/detail/url.hpp"
 #include "vtapi/model/behaviour.hpp"
+#include "vtapi/model/domain_report.hpp"
 #include "vtapi/model/file_report.hpp"
 #include "vtapi/model/ip_report.hpp"
 #include "vtapi/model/mitre.hpp"
 #include "vtapi/model/relationship.hpp"
+#include "vtapi/model/resolution.hpp"
 #include "vtapi/model/scan_result.hpp"
 #include "vtapi/model/url_report.hpp"
 #include "vtapi/model/sigma_rule.hpp"
@@ -521,6 +523,134 @@ void test_ip_report() {
     CHECK(weird.id.empty());
 }
 
+void test_domain_report() {
+    // Canonical domain report parses into a fully-populated DomainReport.
+    const nlohmann::json root =
+        nlohmann::json::parse(load_fixture("domain_report.json"));
+    const vtapi::DomainReport report = vtapi::domain_report_from_json(root);
+
+    // data.* carries the domain as id (no "detected_urls"/"response_code" v2 shape).
+    CHECK(report.type == "domain");
+    CHECK(report.id == "example.com");
+    CHECK(report.self_link == "https://www.virustotal.com/api/v3/domains/example.com");
+
+    // data.attributes.* surfaces with v3 names.
+    CHECK(report.registrar == "MarkMonitor Inc.");
+    CHECK(report.creation_date == 1106675546);
+    CHECK(report.first_seen_date == 1528408800);
+    CHECK(report.last_analysis_date == 1653654377);
+    CHECK(report.last_modification_date == 1653654377);
+    CHECK(report.last_update_date == 1577183919);
+    CHECK(report.whois_date == 1653654377);
+    CHECK(report.last_dns_records_date == 1653654377);
+    CHECK(report.reputation == 42);
+    CHECK(report.tags.size() == 1 && report.tags[0] == "dga");
+    CHECK(!report.whois.empty());
+
+    CHECK(report.categories.size() == 2);
+    CHECK(report.categories.at("Dr.Web") == "known infection source");
+
+    CHECK(report.total_votes.harmless == 12);
+    CHECK(report.total_votes.malicious == 3);
+
+    const vtapi::AnalysisStats& stats = report.last_analysis_stats;
+    CHECK(stats.harmless == 60);
+    CHECK(stats.malicious == 4);
+    CHECK(stats.suspicious == 1);
+    CHECK(stats.undetected == 4);
+
+    CHECK(report.last_analysis_results.size() == 1);
+    const auto flagged = report.last_analysis_results.find("EngineA");
+    CHECK(flagged != report.last_analysis_results.end());
+    if (flagged != report.last_analysis_results.end()) {
+        CHECK(flagged->second.category == "malicious");
+        CHECK(flagged->second.result == "Malware");
+    }
+
+    // last_dns_records are DNS records (type/value/ttl), not resolutions.
+    CHECK(report.last_dns_records.size() == 5);
+    CHECK(report.last_dns_records[0].type == "A");
+    CHECK(report.last_dns_records[0].value == "93.184.216.34");
+    CHECK(report.last_dns_records[0].ttl == 1799);
+    // SOA extras surface on the record.
+    const vtapi::DNSRecord& soa = report.last_dns_records[2];
+    CHECK(soa.type == "SOA");
+    CHECK(soa.rname == "hostmaster.example.com");
+    CHECK(soa.serial == 2020061203);
+    CHECK(soa.refresh == 3600);
+    CHECK(soa.retry == 300);
+    CHECK(soa.expire == 1814400);
+    CHECK(soa.minimum == 600);
+    // MX priority.
+    CHECK(report.last_dns_records[3].priority == 10);
+    // CAA flag/tag.
+    CHECK(report.last_dns_records[4].flag == 0);
+    CHECK(report.last_dns_records[4].tag == "issue");
+
+    CHECK(report.popularity_ranks.size() == 2);
+    const auto alexa = report.popularity_ranks.find("Alexa");
+    CHECK(alexa != report.popularity_ranks.end());
+    if (alexa != report.popularity_ranks.end()) {
+        CHECK(alexa->second.rank == 47288);
+        CHECK(alexa->second.timestamp == 1591630561);
+    }
+
+    // Sparse fixture: missing fields fall back to defaults without throwing.
+    const vtapi::DomainReport sparse =
+        vtapi::domain_report_from_json(nlohmann::json::parse(R"({"data":{"id":"x.com"}})"));
+    CHECK(sparse.id == "x.com");
+    CHECK(sparse.type.empty());
+    CHECK(sparse.self_link.empty());
+    CHECK(sparse.registrar.empty());
+    CHECK(sparse.creation_date == 0);
+    CHECK(sparse.reputation == 0);
+    CHECK(sparse.tags.empty());
+    CHECK(sparse.categories.empty());
+    CHECK(sparse.total_votes.malicious == 0);
+    CHECK(sparse.last_analysis_stats.malicious == 0);
+    CHECK(sparse.last_analysis_results.empty());
+    CHECK(sparse.last_dns_records.empty());
+    CHECK(sparse.popularity_ranks.empty());
+
+    // Non-object root tolerated (empty report).
+    const vtapi::DomainReport weird =
+        vtapi::domain_report_from_json(nlohmann::json::array());
+    CHECK(weird.id.empty());
+}
+
+void test_resolution() {
+    const nlohmann::json root =
+        nlohmann::json::parse(load_fixture("resolution.json"));
+    const vtapi::Resolution r = vtapi::resolution_from_json(root);
+
+    CHECK(r.type == "resolution");
+    CHECK(r.id == "111.222.33.44example.com");
+    CHECK(r.self_link ==
+          "https://www.virustotal.com/api/v3/resolutions/111.222.33.44example.com");
+
+    // v3 attribute names (date/host_name/resolver), not hostname/last_resolved.
+    CHECK(r.date == 1599471348);
+    CHECK(r.host_name == "example.com");
+    CHECK(r.ip_address == "111.222.33.44");
+    CHECK(r.resolver == "VirusTotal");
+
+    CHECK(r.host_name_last_analysis_stats.harmless == 77);
+    CHECK(r.host_name_last_analysis_stats.undetected == 8);
+    CHECK(r.host_name_last_analysis_stats.malicious == 0);
+    CHECK(r.ip_address_last_analysis_stats.harmless == 75);
+    CHECK(r.ip_address_last_analysis_stats.undetected == 10);
+
+    // Sparse and non-object roots fall back to defaults without throwing.
+    const vtapi::Resolution sparse =
+        vtapi::resolution_from_json(nlohmann::json::parse(R"({"data":{"id":"x"}})"));
+    CHECK(sparse.id == "x");
+    CHECK(sparse.date == 0);
+    CHECK(sparse.host_name.empty());
+    CHECK(sparse.resolver.empty());
+    CHECK(sparse.host_name_last_analysis_stats.harmless == 0);
+    CHECK(vtapi::resolution_from_json(nlohmann::json::array()).id.empty());
+}
+
 void test_get_ip_report() {
     const std::string kKey(64, 'a');
     const std::string kIp = "8.8.8.8";
@@ -615,17 +745,27 @@ void test_ip_comments_votes() {
     opt.requests_per_minute = 0.0;
 
     // Mock: GET/POST /ip_addresses/8.8.8.8/comments|votes + GET relationships
-    // all return 200. Matching by path substring keeps the mock short.
-    MockServer server([](const MockRequest& req) -> MockResponse {
+    // all return 200. Matching by path substring keeps the mock short. POST
+    // bodies must carry the v3 object type or the API rejects them.
+    std::string last_vote_body;
+    MockServer server([&](const MockRequest& req) -> MockResponse {
         if (req.path.find("/comments") != std::string::npos) {
             if (req.method == "GET")
                 return {200, R"({"data":[{"id":"c1","attributes":{"text":"hello"}}]})", "application/json"};
-            if (req.method == "POST")
+            if (req.method == "POST") {
+                if (req.body.find("\"type\":\"comment\"") == std::string::npos)
+                    return {400, R"({"error":{"code":"BadRequestError","message":"no type"}})"};
                 return {200, "{}", "application/json"};
+            }
         }
-        if (req.path.find("/votes") != std::string::npos &&
-            (req.method == "GET" || req.method == "POST"))
-            return {200, R"({"data":[{"id":"v1","attributes":{"verdict":"positive"}}]})", "application/json"};
+        if (req.path.find("/votes") != std::string::npos && req.method == "POST") {
+            if (req.body.find("\"type\":\"vote\"") == std::string::npos)
+                return {400, R"({"error":{"code":"BadRequestError","message":"no type"}})"};
+            last_vote_body = req.body;
+            return {200, "{}", "application/json"};
+        }
+        if (req.path.find("/votes") != std::string::npos && req.method == "GET")
+            return {200, R"({"data":[{"id":"v1","attributes":{"verdict":"harmless"}}]})", "application/json"};
         if (req.method == "GET" && req.path.find("/relationships") != std::string::npos)
             return {200, "{}", "application/json"};
         return {404, "{}"};
@@ -638,6 +778,7 @@ void test_ip_comments_votes() {
     CHECK(!comments.empty());
     vt.post_ip_comment("8.8.8.8", "test note");
     vt.post_ip_vote("8.8.8.8", true);
+    CHECK(last_vote_body.find("\"verdict\":\"harmless\"") != std::string::npos);
     const std::string votes = vt.get_ip_votes("8.8.8.8");
     CHECK(!votes.empty());
     const std::string rels = vt.get_ip_relationships("8.8.8.8", "downloaded_files");
@@ -651,6 +792,170 @@ void test_ip_comments_votes() {
         bad = true;
     }
     CHECK(bad);
+}
+
+void test_get_domain_report() {
+    const std::string kKey(64, 'a');
+    const std::string kDomain = "example.com";
+    const auto options = [&](const std::string& base_url) {
+        vtapi::ClientOptions opt;
+        opt.api_key = kKey;
+        opt.base_url = base_url;
+        opt.verify_ssl = false;
+        opt.timeout = std::chrono::seconds(5);
+        opt.requests_per_minute = 0.0;
+        return opt;
+    };
+
+    // 200 → full DomainReport (id = the domain; api key header is sent).
+    MockServer ok_server([&](const MockRequest& req) -> MockResponse {
+        const auto key = req.headers.find("x-apikey");
+        if (key == req.headers.end() || key->second != kKey)
+            return {403, "bad key"};
+        if (req.path != "/domains/" + kDomain)
+            return {404, "wrong path"};
+        return {200, load_fixture("domain_report.json"), "application/json"};
+    });
+    vtapi::VirusTotal vt{options(ok_server.url(""))};
+    const vtapi::DomainReport report = vt.get_domain_report(kDomain);
+    CHECK(report.id == kDomain);
+    CHECK(report.registrar == "MarkMonitor Inc.");
+    CHECK(report.last_dns_records.size() == 5);
+    CHECK(report.last_analysis_stats.malicious == 4);
+
+    // 404 → NotFound ("no data for this domain yet").
+    MockServer nf_server([](const MockRequest&) -> MockResponse {
+        return {404, R"({"error":{"code":"NotFoundError","message":"Domain not found"}})",
+                "application/json"};
+    });
+    vtapi::VirusTotal not_found{options(nf_server.url(""))};
+    CHECK_THROWS_AS(not_found.get_domain_report(kDomain), vtapi::NotFound);
+
+    // Invalid domain (IP, junk, empty, leading hyphen) → VtError, no HTTP.
+    MockServer junk_server([](const MockRequest&) -> MockResponse {
+        return {200, "{}", "application/json"};
+    });
+    vtapi::VirusTotal junk{options(junk_server.url(""))};
+    CHECK_THROWS_AS(junk.get_domain_report("1.2.3.4"), vtapi::VtError);
+    CHECK_THROWS_AS(junk.get_domain_report("not a domain"), vtapi::VtError);
+    CHECK_THROWS_AS(junk.get_domain_report("-bad.com"), vtapi::VtError);
+    CHECK_THROWS_AS(junk.get_domain_report("example"), vtapi::VtError);
+    CHECK_THROWS_AS(junk.get_domain_report(""), vtapi::VtError);
+    // As long as it is still a domain, the request happens.
+    CHECK_THROWS_AS(not_found.get_domain_report("sub.example.com"), vtapi::NotFound);
+}
+
+void test_rescan_domain() {
+    const std::string kKey(64, 'a');
+    vtapi::ClientOptions opt;
+    opt.api_key = kKey;
+    opt.verify_ssl = false;
+    opt.timeout = std::chrono::seconds(5);
+    opt.requests_per_minute = 0.0;
+
+    MockServer server([](const MockRequest& req) -> MockResponse {
+        if (req.method != "POST" || req.path != "/domains/example.com/analyse")
+            return {400, "bad"};
+        return {200, load_fixture("scan_result.json"), "application/json"};
+    });
+    opt.base_url = server.url("");
+    vtapi::VirusTotal vt{opt};
+    const vtapi::ScanResult result = vt.rescan_domain("example.com");
+    CHECK(!result.id.empty());
+
+    // Invalid domain → VtError before any HTTP request.
+    CHECK_THROWS_AS(vt.rescan_domain("1.2.3.4"), vtapi::VtError);
+    CHECK_THROWS_AS(vt.rescan_domain("bad domain"), vtapi::VtError);
+}
+
+void test_domain_comments_votes() {
+    const std::string kKey(64, 'a');
+    vtapi::ClientOptions opt;
+    opt.api_key = kKey;
+    opt.verify_ssl = false;
+    opt.timeout = std::chrono::seconds(5);
+    opt.requests_per_minute = 0.0;
+
+    // Mock: GET/POST /domains/example.com/comments|votes + GET relationships.
+    // POST bodies must carry the v3 object type or the API rejects them.
+    std::string last_vote_body;
+    MockServer server([&](const MockRequest& req) -> MockResponse {
+        if (req.path.find("/comments") != std::string::npos) {
+            if (req.method == "GET")
+                return {200, R"({"data":[{"id":"c1","attributes":{"text":"hello"}}]})", "application/json"};
+            if (req.method == "POST") {
+                if (req.body.find("\"type\":\"comment\"") == std::string::npos)
+                    return {400, R"({"error":{"code":"BadRequestError","message":"no type"}})"};
+                return {200, "{}", "application/json"};
+            }
+        }
+        if (req.path.find("/votes") != std::string::npos && req.method == "POST") {
+            if (req.body.find("\"type\":\"vote\"") == std::string::npos)
+                return {400, R"({"error":{"code":"BadRequestError","message":"no type"}})"};
+            last_vote_body = req.body;
+            return {200, "{}", "application/json"};
+        }
+        if (req.path.find("/votes") != std::string::npos && req.method == "GET")
+            return {200, R"({"data":[{"id":"v1","attributes":{"verdict":"harmless"}}]})", "application/json"};
+        if (req.method == "GET" && req.path.find("/relationships") != std::string::npos)
+            return {200, "{}", "application/json"};
+        return {404, "{}"};
+    });
+    opt.base_url = server.url("");
+    vtapi::VirusTotal vt{opt};
+
+    const std::string comments = vt.get_domain_comments("example.com");
+    CHECK(!comments.empty());
+    vt.post_domain_comment("example.com", "test note");
+    vt.post_domain_vote("example.com", true);
+    CHECK(last_vote_body.find("\"verdict\":\"harmless\"") != std::string::npos);
+    vt.post_domain_vote("example.com", false);
+    CHECK(last_vote_body.find("\"verdict\":\"malicious\"") != std::string::npos);
+    const std::string votes = vt.get_domain_votes("example.com");
+    CHECK(!votes.empty());
+    const std::string rels = vt.get_domain_relationships("example.com", "resolutions");
+    CHECK(rels == "{}");
+
+    // Invalid domain → VtError before any HTTP request.
+    CHECK_THROWS_AS(vt.get_domain_comments("bad"), vtapi::VtError);
+    CHECK_THROWS_AS(vt.post_domain_vote("bad", true), vtapi::VtError);
+}
+
+void test_get_resolution() {
+    const std::string kKey(64, 'a');
+    const std::string kId = "111.222.33.44example.com";
+    const auto options = [&](const std::string& base_url) {
+        vtapi::ClientOptions opt;
+        opt.api_key = kKey;
+        opt.base_url = base_url;
+        opt.verify_ssl = false;
+        opt.timeout = std::chrono::seconds(5);
+        opt.requests_per_minute = 0.0;
+        return opt;
+    };
+
+    // 200 → full Resolution.
+    MockServer ok_server([&](const MockRequest& req) -> MockResponse {
+        if (req.path != "/resolutions/" + kId)
+            return {404, "wrong path"};
+        return {200, load_fixture("resolution.json"), "application/json"};
+    });
+    vtapi::VirusTotal vt{options(ok_server.url(""))};
+    const vtapi::Resolution r = vt.get_resolution(kId);
+    CHECK(r.host_name == "example.com");
+    CHECK(r.ip_address == "111.222.33.44");
+    CHECK(r.host_name_last_analysis_stats.harmless == 77);
+
+    // 404 → NotFound.
+    MockServer nf_server([](const MockRequest&) -> MockResponse {
+        return {404, R"({"error":{"code":"NotFoundError","message":"Resolution not found"}})",
+                "application/json"};
+    });
+    vtapi::VirusTotal not_found{options(nf_server.url(""))};
+    CHECK_THROWS_AS(not_found.get_resolution(kId), vtapi::NotFound);
+
+    // Empty id → VtError before any HTTP request.
+    CHECK_THROWS_AS(not_found.get_resolution(""), vtapi::VtError);
 }
 
 void test_scan_url() {
@@ -731,17 +1036,27 @@ void test_url_comments_votes() {
     opt.requests_per_minute = 0.0;
 
     // Mock: GET/POST /urls/{id}/comments|votes + GET relationships all return
-    // 200. Matching by path substring because the base64url id varies.
-    MockServer server([](const MockRequest& req) -> MockResponse {
+    // 200. Matching by path substring because the base64url id varies. POST
+    // bodies must carry the v3 object type or the API rejects them.
+    std::string last_vote_body;
+    MockServer server([&](const MockRequest& req) -> MockResponse {
         if (req.path.find("/comments") != std::string::npos) {
             if (req.method == "GET")
                 return {200, R"({"data":[{"id":"c1","attributes":{"text":"hello"}}]})", "application/json"};
-            if (req.method == "POST")
+            if (req.method == "POST") {
+                if (req.body.find("\"type\":\"comment\"") == std::string::npos)
+                    return {400, R"({"error":{"code":"BadRequestError","message":"no type"}})"};
                 return {200, "{}", "application/json"};
+            }
         }
-        if (req.path.find("/votes") != std::string::npos &&
-            (req.method == "GET" || req.method == "POST"))
-            return {200, R"({"data":[{"id":"v1","attributes":{"verdict":"positive"}}]})", "application/json"};
+        if (req.path.find("/votes") != std::string::npos && req.method == "POST") {
+            if (req.body.find("\"type\":\"vote\"") == std::string::npos)
+                return {400, R"({"error":{"code":"BadRequestError","message":"no type"}})"};
+            last_vote_body = req.body;
+            return {200, "{}", "application/json"};
+        }
+        if (req.path.find("/votes") != std::string::npos && req.method == "GET")
+            return {200, R"({"data":[{"id":"v1","attributes":{"verdict":"harmless"}}]})", "application/json"};
         if (req.method == "GET" && req.path.find("/relationships") != std::string::npos)
             return {200, "{}", "application/json"};
         return {404, "{}"};
@@ -756,6 +1071,7 @@ void test_url_comments_votes() {
     // post_url_comment + vote + get_url_votes (no exception = pass through mock)
     vt.post_url_comment("https://example.com", "test note");
     vt.post_url_vote("https://example.com", true);
+    CHECK(last_vote_body.find("\"verdict\":\"harmless\"") != std::string::npos);
     const std::string votes = vt.get_url_votes("https://example.com");
     CHECK(!votes.empty());
 
@@ -2298,9 +2614,15 @@ int main() {
     test_get_file_report();
     test_url_report();
     test_ip_report();
+    test_domain_report();
+    test_resolution();
     test_get_ip_report();
     test_rescan_ip();
     test_ip_comments_votes();
+    test_get_domain_report();
+    test_rescan_domain();
+    test_domain_comments_votes();
+    test_get_resolution();
     test_scan_url();
     test_scan_urls();
     test_url_reports();

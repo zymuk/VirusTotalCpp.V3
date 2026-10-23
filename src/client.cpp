@@ -379,6 +379,67 @@ bool is_valid_ip(const std::string& ip) {
     return octets == 3 && digits > 0;
 }
 
+// Hostname/DNS name ("example.com", "sub.example.com"). The v3 domain object id
+// is the domain itself (no base64url), so reject anything that cannot be a host
+// name before the HTTP round-trip: empty, too long, spaces, leading/trailing or
+// doubled dots, hyphens at label edges.
+bool is_valid_domain(const std::string& domain) {
+    if (domain.empty() || domain.size() > 253)
+        return false;
+    // An IPv4 literal ("1.2.3.4") passes the label checks below; it is not a
+    // domain object id.
+    if (is_valid_ip(domain))
+        return false;
+    std::size_t labels = 0;
+    std::size_t label_len = 0;
+    bool label_has_alpha = false;
+    for (std::size_t i = 0; i < domain.size(); ++i) {
+        const char c = domain[i];
+        if (c == '.') {
+            if (label_len == 0 || domain[i - 1] == '-')
+                return false;
+            ++labels;
+            label_len = 0;
+            label_has_alpha = false;
+        } else {
+            const bool alpha = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+            const bool alnum = alpha || (c >= '0' && c <= '9');
+            if (!(alnum || c == '-'))
+                return false;
+            if (c == '-' && label_len == 0)
+                return false;
+            if (++label_len > 63)
+                return false;
+            label_has_alpha = label_has_alpha || alpha;
+        }
+    }
+    // No trailing dot/empty label, no trailing hyphen, and a TLD with a letter
+    // (a purely numeric last label is an IP, not a domain).
+    if (label_len == 0 || domain.back() == '-' || !label_has_alpha)
+        return false;
+    ++labels;
+    return labels >= 2; // require a dot: a bare TLD is not a domain object
+}
+
+// v3 requires the object `type` in the POST body; without it the API rejects the
+// request with "Expecting object type ... but got None". The comment text is
+// JSON-escaped here (a raw quote would otherwise break the payload).
+std::string comment_body(const std::string& text) {
+    nlohmann::json j;
+    j["data"]["type"] = "comment";
+    j["data"]["attributes"]["text"] = text;
+    return j.dump();
+}
+
+// Vote bodies carry type="vote"; `verdict` is "harmless" or "malicious" in v3
+// (v2's positive/negative naming no longer applies).
+std::string vote_body(bool positive) {
+    nlohmann::json j;
+    j["data"]["type"] = "vote";
+    j["data"]["attributes"]["verdict"] = positive ? "harmless" : "malicious";
+    return j.dump();
+}
+
 } // namespace
 
 std::vector<ScanResult> VirusTotal::scan_urls(const std::vector<std::string>& urls) {
@@ -448,8 +509,7 @@ void VirusTotal::post_url_comment(const std::string& url_or_id, const std::strin
     if (url_or_id.find("://") != std::string::npos) id = detail::base64url_encode(url_or_id);
     limiter_.wait();
     const detail::HttpResponse resp = http_.post(base_url_ + "/urls/" + id + "/comments",
-        "{\"data\":{\"attributes\":{\"text\":\"" + text + "\"}}}",
-        "application/json");
+        comment_body(text), "application/json");
     detail::json_or_throw(resp);
 }
 
@@ -458,8 +518,7 @@ void VirusTotal::post_url_vote(const std::string& url_or_id, bool positive) {
     if (url_or_id.find("://") != std::string::npos) id = detail::base64url_encode(url_or_id);
     limiter_.wait();
     const detail::HttpResponse resp = http_.post(base_url_ + "/urls/" + id + "/votes",
-        "{\"data\":{\"attributes\":{\"verdict\":\"" + std::string(positive ? "positive" : "negative") + "\"}}}",
-        "application/json");
+        vote_body(positive), "application/json");
     detail::json_or_throw(resp);
 }
 
@@ -510,8 +569,7 @@ void VirusTotal::post_ip_comment(const std::string& ip, const std::string& text)
         throw VtError("invalid ip address");
     limiter_.wait();
     const detail::HttpResponse resp = http_.post(base_url_ + "/ip_addresses/" + ip + "/comments",
-        "{\"data\":{\"attributes\":{\"text\":\"" + text + "\"}}}",
-        "application/json");
+        comment_body(text), "application/json");
     detail::json_or_throw(resp);
 }
 
@@ -520,8 +578,7 @@ void VirusTotal::post_ip_vote(const std::string& ip, bool positive) {
         throw VtError("invalid ip address");
     limiter_.wait();
     const detail::HttpResponse resp = http_.post(base_url_ + "/ip_addresses/" + ip + "/votes",
-        "{\"data\":{\"attributes\":{\"verdict\":\"" + std::string(positive ? "positive" : "negative") + "\"}}}",
-        "application/json");
+        vote_body(positive), "application/json");
     detail::json_or_throw(resp);
 }
 
@@ -541,6 +598,75 @@ std::string VirusTotal::get_ip_relationships(const std::string& ip,
     const detail::HttpResponse resp =
         http_.get(base_url_ + "/ip_addresses/" + ip + "/relationships/" + relationship);
     return detail::json_or_throw(resp).dump();
+}
+
+DomainReport VirusTotal::get_domain_report(const std::string& domain) {
+    if (!is_valid_domain(domain))
+        throw VtError("invalid domain");
+    limiter_.wait();
+    const detail::HttpResponse resp = http_.get(base_url_ + "/domains/" + domain);
+    return domain_report_from_json(detail::json_or_throw(resp));
+}
+
+ScanResult VirusTotal::rescan_domain(const std::string& domain) {
+    if (!is_valid_domain(domain))
+        throw VtError("invalid domain");
+    limiter_.wait();
+    const detail::HttpResponse resp =
+        http_.post(base_url_ + "/domains/" + domain + "/analyse", "", "");
+    return scan_result_from_json(detail::json_or_throw(resp));
+}
+
+std::string VirusTotal::get_domain_comments(const std::string& domain) {
+    if (!is_valid_domain(domain))
+        throw VtError("invalid domain");
+    limiter_.wait();
+    const detail::HttpResponse resp = http_.get(base_url_ + "/domains/" + domain + "/comments");
+    return detail::json_or_throw(resp).dump();
+}
+
+void VirusTotal::post_domain_comment(const std::string& domain, const std::string& text) {
+    if (!is_valid_domain(domain))
+        throw VtError("invalid domain");
+    limiter_.wait();
+    const detail::HttpResponse resp = http_.post(base_url_ + "/domains/" + domain + "/comments",
+        comment_body(text), "application/json");
+    detail::json_or_throw(resp);
+}
+
+void VirusTotal::post_domain_vote(const std::string& domain, bool positive) {
+    if (!is_valid_domain(domain))
+        throw VtError("invalid domain");
+    limiter_.wait();
+    const detail::HttpResponse resp = http_.post(base_url_ + "/domains/" + domain + "/votes",
+        vote_body(positive), "application/json");
+    detail::json_or_throw(resp);
+}
+
+std::string VirusTotal::get_domain_votes(const std::string& domain) {
+    if (!is_valid_domain(domain))
+        throw VtError("invalid domain");
+    limiter_.wait();
+    const detail::HttpResponse resp = http_.get(base_url_ + "/domains/" + domain + "/votes");
+    return detail::json_or_throw(resp).dump();
+}
+
+std::string VirusTotal::get_domain_relationships(const std::string& domain,
+                                                 const std::string& relationship) {
+    if (!is_valid_domain(domain))
+        throw VtError("invalid domain");
+    limiter_.wait();
+    const detail::HttpResponse resp =
+        http_.get(base_url_ + "/domains/" + domain + "/relationships/" + relationship);
+    return detail::json_or_throw(resp).dump();
+}
+
+Resolution VirusTotal::get_resolution(const std::string& id) {
+    if (id.empty())
+        throw VtError("invalid resolution id");
+    limiter_.wait();
+    const detail::HttpResponse resp = http_.get(base_url_ + "/resolutions/" + id);
+    return resolution_from_json(detail::json_or_throw(resp));
 }
 
 } // namespace vtapi

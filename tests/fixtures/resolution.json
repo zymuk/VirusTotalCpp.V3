@@ -1,0 +1,29 @@
+{
+  "data": {
+    "attributes": {
+      "date": 1599471348,
+      "host_name": "example.com",
+      "host_name_last_analysis_stats": {
+        "harmless": 77,
+        "malicious": 0,
+        "suspicious": 0,
+        "undetected": 8,
+        "timeout": 0
+      },
+      "ip_address": "111.222.33.44",
+      "ip_address_last_analysis_stats": {
+        "harmless": 75,
+        "malicious": 0,
+        "suspicious": 0,
+        "undetected": 10,
+        "timeout": 0
+      },
+      "resolver": "VirusTotal"
+    },
+    "id": "111.222.33.44example.com",
+    "links": {
+      "self": "https://www.virustotal.com/api/v3/resolutions/111.222.33.44example.com"
+    },
+    "type": "resolution"
+  }
+}

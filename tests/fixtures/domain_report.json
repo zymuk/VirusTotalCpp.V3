@@ -1,0 +1,93 @@
+{
+  "data": {
+    "type": "domain",
+    "id": "example.com",
+    "attributes": {
+      "categories": {
+        "Dr.Web": "known infection source",
+        "Forcepoint ThreatSeeker": "bot networks. parked domain"
+      },
+      "creation_date": 1106675546,
+      "first_seen_date": 1528408800,
+      "last_analysis_date": 1653654377,
+      "last_modification_date": 1653654377,
+      "last_update_date": 1577183919,
+      "whois_date": 1653654377,
+      "last_dns_records_date": 1653654377,
+      "registrar": "MarkMonitor Inc.",
+      "reputation": 42,
+      "tags": ["dga"],
+      "total_votes": {
+        "harmless": 12,
+        "malicious": 3
+      },
+      "last_analysis_stats": {
+        "harmless": 60,
+        "malicious": 4,
+        "suspicious": 1,
+        "timeout": 0,
+        "undetected": 4,
+        "type-unsupported": 0
+      },
+      "last_analysis_results": {
+        "EngineA": {
+          "category": "malicious",
+          "engine_name": "EngineA",
+          "engine_version": "2.0",
+          "engine_update": "20230101",
+          "result": "Malware"
+        }
+      },
+      "last_dns_records": [
+        {
+          "type": "A",
+          "value": "93.184.216.34",
+          "ttl": 1799
+        },
+        {
+          "type": "AAAA",
+          "value": "2606:2800:220:1:248:1893:25c8:1946",
+          "ttl": 1799
+        },
+        {
+          "expire": 1814400,
+          "minimum": 600,
+          "refresh": 3600,
+          "retry": 300,
+          "rname": "hostmaster.example.com",
+          "serial": 2020061203,
+          "ttl": 1799,
+          "type": "SOA",
+          "value": "ns1.example.com"
+        },
+        {
+          "priority": 10,
+          "ttl": 1545,
+          "type": "MX",
+          "value": "mail.example.com"
+        },
+        {
+          "flag": 0,
+          "tag": "issue",
+          "ttl": 1799,
+          "type": "CAA",
+          "value": "globalsign.com"
+        }
+      ],
+      "popularity_ranks": {
+        "Alexa": {
+          "rank": 47288,
+          "timestamp": 1591630561
+        },
+        "Cisco Umbrella": {
+          "rank": 338,
+          "timestamp": 1591803361
+        }
+      },
+      "whois": "Domain Name: EXAMPLE.COM\nRegistrar: MarkMonitor Inc.\nCreation Date: 1995-08-14T04:00:00Z\n"
+    },
+    "links": {
+      "self": "https://www.virustotal.com/api/v3/domains/example.com"
+    }
+  }
+}

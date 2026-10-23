@@ -91,6 +91,8 @@ add_library(vtapi
   src/yara_ruleset.cpp
   src/url_report.cpp
   src/ip_report.cpp
+  src/domain_report.cpp
+  src/resolution.cpp
   src/client.cpp
 )
 add_library(vtapi::vtapi ALIAS vtapi)

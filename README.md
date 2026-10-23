@@ -8,8 +8,11 @@ rest of the file API: large scans, downloads, rescanning, behaviour reports,
 Sigma/YARA rules, MITRE summaries and file relationships. **v1.3.0** adds the URL
 API: scanning, reports, rescanning, comments, votes and relationships. **v1.4.0**
 adds the IP address API: reports, rescanning, comments, votes and relationships.
+**v1.5.0** adds the domain API (reports, rescanning, comments, votes and
+relationships) and domain/IP resolutions. **v1.5.1** fixes the JSON bodies used
+when posting comments and votes.
 
-## Status - v1.4.0
+## Status - v1.5.1
 
 Implemented:
 
@@ -34,11 +37,14 @@ Implemented:
 - `get_ip_report(ip)` - IP address report (`GET /ip_addresses/{id}`)
 - `rescan_ip(ip)` - request a fresh IP analysis
 - IP comments (list/add), votes (list/add) and relationships
+- `get_domain_report(domain)` - domain report (`GET /domains/{id}`)
+- `rescan_domain(domain)` - request a fresh domain analysis
+- Domain comments (list/add), votes (list/add) and relationships
+- `get_resolution(id)` - a single domain/IP resolution (`GET /resolutions/{id}`)
 - CLI `vtapi_eicar` - drive the file and URL flows from a shell
 
 Planned for later releases:
 
-- Domains: report, rescan
 - Comments: list and add per object type
 - Analysis polling (`GET /analyses/{id}`)
 
@@ -184,11 +190,20 @@ arguments prints the usage. Exit codes: `0` success, `1` runtime error,
 | `void post_ip_vote(ip, positive)` | `POST /ip_addresses/{id}/votes` |
 | `std::string get_ip_votes(ip)` | `GET /ip_addresses/{id}/votes` |
 | `std::string get_ip_relationships(ip, rel)` | `GET /ip_addresses/{id}/relationships/{rel}` |
+| `DomainReport get_domain_report(domain)` | `GET /domains/{id}` (`id` = the domain name) |
+| `ScanResult rescan_domain(domain)` | `POST /domains/{id}/analyse` |
+| `std::string get_domain_comments(domain)` | `GET /domains/{id}/comments` |
+| `void post_domain_comment(domain, text)` | `POST /domains/{id}/comments` |
+| `void post_domain_vote(domain, positive)` | `POST /domains/{id}/votes` |
+| `std::string get_domain_votes(domain)` | `GET /domains/{id}/votes` |
+| `std::string get_domain_relationships(domain, rel)` | `GET /domains/{id}/relationships/{rel}` |
+| `Resolution get_resolution(id)` | `GET /resolutions/{id}` (`id` = `<ip><host_name>`) |
 
 The response models match the v3 JSON payloads (`FileReport` from
 `data.attributes.*`, `ScanResult` from `data.*` plus `meta.file_info.*`,
-`IPReport` from `data.attributes.*`). Field names and types follow the real API
-rather than another client library.
+`IPReport` and `DomainReport` from `data.attributes.*`, `Resolution` from
+`data.attributes.*`). Field names and types follow the real API rather than
+another client library.
 
 ## Errors
 

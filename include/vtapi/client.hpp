@@ -9,11 +9,13 @@
 #include "vtapi/detail/http.hpp"
 #include "vtapi/detail/ratelimit.hpp"
 #include "vtapi/model/behaviour.hpp"
+#include "vtapi/model/domain_report.hpp"
 #include "vtapi/model/file_report.hpp"
 #include "vtapi/model/ip_report.hpp"
 #include "vtapi/model/url_report.hpp"
 #include "vtapi/model/mitre.hpp"
 #include "vtapi/model/relationship.hpp"
+#include "vtapi/model/resolution.hpp"
 #include "vtapi/model/scan_result.hpp"
 #include "vtapi/model/sigma_rule.hpp"
 #include "vtapi/model/yara_ruleset.hpp"
@@ -180,6 +182,27 @@ public:
     std::string get_ip_votes(const std::string& ip);
     std::string get_ip_relationships(const std::string& ip,
                                      const std::string& relationship);
+
+    // Domain report (GET /domains/{id}). id is the domain itself; v3 has no
+    // batch endpoint, so callers repeat this per domain.
+    DomainReport get_domain_report(const std::string& domain);
+
+    // Re-runs the domain analysis (POST /domains/{id}/analyse). Returns the new
+    // analysis unit; poll with get_domain_report.
+    ScanResult rescan_domain(const std::string& domain);
+
+    // Domain comments / votes / relationships (reuse M8 generic template).
+    std::string get_domain_comments(const std::string& domain);
+    void post_domain_comment(const std::string& domain, const std::string& text);
+    void post_domain_vote(const std::string& domain, bool positive);
+    std::string get_domain_votes(const std::string& domain);
+    std::string get_domain_relationships(const std::string& domain,
+                                         const std::string& relationship);
+
+    // One domain<->IP resolution (GET /resolutions/{id}). id is the opaque
+    // resolution id ("<ip><host_name>"); also surfaced via the `resolutions`
+    // relationship of domains and IPs.
+    Resolution get_resolution(const std::string& id);
 
 private:
     detail::HttpClient http_;
