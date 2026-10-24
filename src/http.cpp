@@ -129,6 +129,14 @@ HttpResponse HttpClient::get(const std::string& url,
     return perform(handle, build_headers(headers), nullptr);
 }
 
+HttpResponse HttpClient::del(const std::string& url,
+                            const std::vector<std::string>& headers) {
+    CURL* handle = static_cast<CURL*>(curl_);
+    apply_common_options(handle, url);
+    curl_easy_setopt(handle, CURLOPT_CUSTOMREQUEST, "DELETE");
+    return perform(handle, build_headers(headers), nullptr);
+}
+
 HttpResponse HttpClient::post(const std::string& url, const std::string& body,
                               const std::string& content_type) {
     CURL* handle = static_cast<CURL*>(curl_);

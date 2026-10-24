@@ -46,6 +46,8 @@ public:
     HttpResponse post_multipart(const std::string& url,
                                 const std::map<std::string, std::string>& fields,
                                 const std::vector<MultipartFile>& files);
+    HttpResponse del(const std::string& url,
+                     const std::vector<std::string>& headers = {});
 
     void set_timeout(std::chrono::seconds timeout);
     void set_connect_timeout(std::chrono::seconds timeout);

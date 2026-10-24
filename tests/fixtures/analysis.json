@@ -1,0 +1,44 @@
+{
+  "data": {
+    "type": "analysis",
+    "id": "u-1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d-1600000000",
+    "links": {
+      "self": "https://www.virustotal.com/api/v3/analyses/u-1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d-1600000000"
+    },
+    "attributes": {
+      "date": 1600000000,
+      "status": "completed",
+      "stats": {
+        "harmless": 60,
+        "malicious": 5,
+        "suspicious": 0,
+        "timeout": 0,
+        "undetected": 12,
+        "type-unsupported": 3
+      },
+      "results": {
+        "EngineOne": {
+          "category": "malicious",
+          "engine_name": "EngineOne",
+          "engine_update": "20200901",
+          "engine_version": "1.0.0",
+          "method": "blacklist",
+          "result": "EICAR-Test-File"
+        },
+        "EngineTwo": {
+          "category": "harmless",
+          "engine_name": "EngineTwo",
+          "engine_update": "20200902",
+          "engine_version": "2.1.0",
+          "method": "blacklist",
+          "result": null
+        }
+      }
+    }
+  },
+  "meta": {
+    "file_info": {
+      "sha256": "275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f"
+    }
+  }
+}
