@@ -9,6 +9,7 @@
 #include "vtapi/detail/http.hpp"
 #include "vtapi/detail/ratelimit.hpp"
 #include "vtapi/model/analysis.hpp"
+#include "vtapi/model/collection.hpp"
 #include "vtapi/model/comment.hpp"
 #include "vtapi/model/search_result.hpp"
 #include "vtapi/model/metadata.hpp"
@@ -263,6 +264,59 @@ public:
     SavedSearch update_saved_search(const std::string& id, const std::string& name,
                                     const std::string& query);
     void delete_saved_search(const std::string& id);
+
+    // Collections (POST/GET/PATCH/DELETE /collections[/{id}]). raw_items lets
+    // VirusTotal extract additional IoCs from free text when non-empty.
+    Collection create_collection(const std::string& name,
+                                 const std::string& description = {},
+                                 const std::string& raw_items = {});
+    Collection get_collection(const std::string& id);
+    Collection update_collection(const std::string& id,
+                                 const std::string& name = {},
+                                 const std::string& description = {},
+                                 const std::string& raw_items = {});
+    void delete_collection(const std::string& id);
+
+    // Premium collection listing (GET /collections).
+    CollectionList list_collections(int limit = 10, const std::string& cursor = {},
+                                    const std::string& filter = {},
+                                    const std::string& order = {});
+
+    // Collection comments (reuse the M8 Comment model).
+    CommentListResult get_collection_comments(const std::string& id, int limit = 10,
+                                              const std::string& cursor = {});
+    Comment post_collection_comment(const std::string& id, const std::string& text);
+
+    // Add/remove IoCs. relationship is e.g. "files", "urls", "domains",
+    // "ip_addresses" or "references". V3 accepts a batch of descriptors in the
+    // request body for both POST and DELETE.
+    void add_collection_items(const std::string& id, const std::string& relationship,
+                              const std::vector<CollectionElement>& elements);
+    void remove_collection_items(const std::string& id, const std::string& relationship,
+                                 const std::vector<CollectionElement>& elements);
+
+    // Collection relationships: full objects (/collections/{id}/{relationship})
+    // and descriptors (/collections/{id}/relationships/{relationship}).
+    RelationshipList get_collection_relationships(
+        const std::string& id, const std::string& relationship, int limit = 10,
+        const std::string& cursor = {});
+    RelationshipList get_collection_relationship_descriptors(
+        const std::string& id, const std::string& relationship, int limit = 10,
+        const std::string& cursor = {});
+
+    // Premium collection exports and in-collection IoC search.
+    std::string export_collection_iocs(const std::string& id,
+                                       const std::string& format = "json");
+    std::string export_collection_relationship_iocs(
+        const std::string& id, const std::string& relationship,
+        const std::string& format = "json");
+    std::string export_collection_aggregations(const std::string& id,
+                                               const std::string& format = "json");
+    SearchResult search_collection_iocs(const std::string& id, const std::string& query,
+                                        int limit = 10, const std::string& cursor = {},
+                                        const std::string& order = {},
+                                        const std::string& attributes = {},
+                                        const std::string& relationships = {});
 
 private:
     detail::HttpClient http_;

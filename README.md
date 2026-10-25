@@ -10,9 +10,11 @@ API: scanning, reports, rescanning, comments, votes and relationships. **v1.4.0*
 adds the IP address API: reports, rescanning, comments, votes and relationships.
 **v1.5.0** adds the domain API (reports, rescanning, comments, votes and
 relationships) and domain/IP resolutions. **v1.5.1** fixes the JSON bodies used
-when posting comments and votes.
+when posting comments and votes. **v1.5.2** adds analysis polling and generic
+comments, votes and relationships. **v1.5.3** adds search, metadata and saved
+searches. **v1.6.0** adds collections.
 
-## Status - v1.5.1
+## Status - v1.6.0
 
 Implemented:
 
@@ -41,12 +43,16 @@ Implemented:
 - `rescan_domain(domain)` - request a fresh domain analysis
 - Domain comments (list/add), votes (list/add) and relationships
 - `get_resolution(id)` - a single domain/IP resolution (`GET /resolutions/{id}`)
+- `get_analysis(id)` / `await_analysis(id)` - analysis status and polling
+- generic comments, votes and relationships across object types
+- `search(query)`, `get_metadata()` and saved-search CRUD
+- collections: CRUD, comments, IoC add/remove, relationships and descriptors
+- premium collection listing, IoC/aggregation exports and in-collection search
 - CLI `vtapi_eicar` - drive the file and URL flows from a shell
 
 Planned for later releases:
 
-- Comments: list and add per object type
-- Analysis polling (`GET /analyses/{id}`)
+- graphs, feeds and further VirusTotal API v3 endpoints
 
 Endpoints are implemented one at a time.
 
@@ -198,11 +204,36 @@ arguments prints the usage. Exit codes: `0` success, `1` runtime error,
 | `std::string get_domain_votes(domain)` | `GET /domains/{id}/votes` |
 | `std::string get_domain_relationships(domain, rel)` | `GET /domains/{id}/relationships/{rel}` |
 | `Resolution get_resolution(id)` | `GET /resolutions/{id}` (`id` = `<ip><host_name>`) |
+| `AnalysisReport get_analysis(id)` | `GET /analyses/{id}` |
+| `AnalysisReport await_analysis(id, timeout, interval)` | polls `GET /analyses/{id}` |
+| `CommentListResult get_comments(type, id)` / `get_comments_latest()` | `GET /{type}/{id}/comments`, `GET /comments` |
+| `Comment get_comment(id)` / `delete_comment(id)` | `GET` / `DELETE /comments/{id}` |
+| `post_comment(type, id, text)` / `vote_comment(id, positive)` | `POST /{type}/{id}/comments`, `POST /comments/{id}/votes` |
+| `put_vote(type, id, positive)` / `get_votes(type, id)` | `POST` / `GET /{type}/{id}/votes` |
+| `get_relationships(type, id, rel)` | `GET /{type}/{id}/relationships/{rel}` |
+| `get_relationship_descriptor(type, id, rel, related_id)` | `GET /{type}/{id}/relationships/{rel}/{related_id}` |
+| `SearchResult search(query)` | `GET /search?query=...` |
+| `std::string intelligence_search(query)` | `POST /intelligence/search` (premium) |
+| `std::string get_search_snippets(query)` | `GET /intelligence/search/snippets` (premium) |
+| `Metadata get_metadata()` | `GET /metadata` |
+| saved searches | `GET` / `POST /user_saved_searches`, `GET` / `PATCH` / `DELETE /user_saved_searches/{id}` |
+| `Collection create_collection(name, description = {}, raw_items = {})` | `POST /collections` |
+| `Collection get_collection(id)` / `update_collection(...)` / `delete_collection(id)` | `GET` / `PATCH` / `DELETE /collections/{id}` |
+| `CollectionList list_collections(limit, cursor, filter, order)` | `GET /collections` (premium) |
+| `get_collection_comments(id, limit, cursor)` / `post_collection_comment(id, text)` | `GET` / `POST /collections/{id}/comments` |
+| `add_collection_items(id, rel, elements)` / `remove_collection_items(...)` | `POST` / `DELETE /collections/{id}/{rel}` with data descriptors |
+| `get_collection_relationships(id, rel, ...)` | `GET /collections/{id}/{rel}` |
+| `get_collection_relationship_descriptors(id, rel, ...)` | `GET /collections/{id}/relationships/{rel}` |
+| `export_collection_iocs(id, format = "json")` | `GET /collections/{id}/download/{format}` (premium) |
+| `export_collection_relationship_iocs(id, rel, format = "json")` | `GET /collections/{id}/{rel}/download/{format}` (premium) |
+| `export_collection_aggregations(id, format = "json")` | `GET /collections/{id}/aggregations/download/{format}` (premium) |
+| `search_collection_iocs(id, query, ...)` | `GET /collections/{id}/search` (premium) |
 
 The response models match the v3 JSON payloads (`FileReport` from
 `data.attributes.*`, `ScanResult` from `data.*` plus `meta.file_info.*`,
-`IPReport` and `DomainReport` from `data.attributes.*`, `Resolution` from
-`data.attributes.*`). Field names and types follow the real API rather than
+`IPReport`, `DomainReport`, `Collection` and `Resolution` from
+`data.attributes.*`, `CommentListResult` / `CollectionList` from `data.*` plus
+`meta.*` and `links.*`). Field names and types follow the real API rather than
 another client library.
 
 ## Errors

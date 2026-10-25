@@ -94,6 +94,7 @@ add_library(vtapi
   src/domain_report.cpp
   src/resolution.cpp
   src/analysis.cpp
+  src/collection.cpp
   src/comment.cpp
   src/search_result.cpp
   src/metadata.cpp

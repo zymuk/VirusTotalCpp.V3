@@ -50,6 +50,8 @@ public:
                        const std::string& content_type);
     HttpResponse del(const std::string& url,
                      const std::vector<std::string>& headers = {});
+    HttpResponse del(const std::string& url, const std::string& body,
+                     const std::string& content_type);
 
     void set_timeout(std::chrono::seconds timeout);
     void set_connect_timeout(std::chrono::seconds timeout);

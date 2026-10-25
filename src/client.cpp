@@ -706,7 +706,7 @@ namespace {
 
 bool is_valid_object_type(const std::string& t) {
     return t == "files" || t == "urls" || t == "domains" || t == "ip_addresses" ||
-           t == "comments" || t == "analyses";
+           t == "comments" || t == "analyses" || t == "collections";
 }
 
 } // namespace
@@ -1008,6 +1008,277 @@ void VirusTotal::delete_saved_search(const std::string& id) {
     limiter_.wait();
     const detail::HttpResponse resp = http_.del(base_url_ + "/user_saved_searches/" + id);
     detail::json_or_throw(resp);
+}
+
+namespace {
+
+std::string collection_url(const std::string& base_url, const std::string& id) {
+    return base_url + "/collections/" + id;
+}
+
+std::string append_query(
+    std::string url,
+    const std::vector<std::pair<std::string, std::string>>& params) {
+    bool first = url.find('?') == std::string::npos;
+    for (const auto& param : params) {
+        if (param.second.empty())
+            continue;
+        url += first ? "?" : "&";
+        first = false;
+        url += detail::percent_encode(param.first);
+        url += "=";
+        url += detail::percent_encode(param.second);
+    }
+    return url;
+}
+
+std::string collection_attributes_body(const std::string& name,
+                                       const std::string& description,
+                                       const std::string& raw_items) {
+    nlohmann::json body;
+    body["data"]["type"] = "collection";
+    if (!name.empty())
+        body["data"]["attributes"]["name"] = name;
+    if (!description.empty())
+        body["data"]["attributes"]["description"] = description;
+    if (!raw_items.empty())
+        body["data"]["raw_items"] = raw_items;
+    return body.dump();
+}
+
+std::string collection_items_body(const std::vector<CollectionElement>& elements) {
+    nlohmann::json data = nlohmann::json::array();
+    for (const auto& element : elements) {
+        nlohmann::json descriptor;
+        descriptor["type"] = element.type;
+        if (element.type == "url" && !element.url.empty())
+            descriptor["url"] = element.url;
+        else
+            descriptor["id"] = element.id;
+        data.push_back(std::move(descriptor));
+    }
+    nlohmann::json body;
+    body["data"] = std::move(data);
+    return body.dump();
+}
+
+void validate_collection_items(const std::string& id, const std::string& relationship,
+                               const std::vector<CollectionElement>& elements) {
+    if (id.empty())
+        throw VtError("invalid collection id");
+    if (relationship.empty())
+        throw VtError("invalid collection relationship");
+    if (elements.empty())
+        throw VtError("empty collection item list");
+    for (const auto& element : elements) {
+        if (element.type.empty())
+            throw VtError("invalid collection item type");
+        if (element.type == "url" && !element.url.empty())
+            continue;
+        if (element.id.empty())
+            throw VtError("invalid collection item id");
+    }
+}
+
+void validate_export_format(const std::string& format, bool aggregations) {
+    if (format == "json" || format == "csv")
+        return;
+    if (!aggregations && format == "stix")
+        return;
+    throw VtError("invalid collection export format");
+}
+
+} // namespace
+
+Collection VirusTotal::create_collection(const std::string& name,
+                                          const std::string& description,
+                                          const std::string& raw_items) {
+    if (name.empty())
+        throw VtError("invalid collection name");
+    const std::string body = collection_attributes_body(name, description, raw_items);
+    limiter_.wait();
+    const detail::HttpResponse resp =
+        http_.post(base_url_ + "/collections", body, "application/json");
+    return collection_from_json(detail::json_or_throw(resp));
+}
+
+Collection VirusTotal::get_collection(const std::string& id) {
+    if (id.empty())
+        throw VtError("invalid collection id");
+    limiter_.wait();
+    const detail::HttpResponse resp = http_.get(collection_url(base_url_, id));
+    return collection_from_json(detail::json_or_throw(resp));
+}
+
+Collection VirusTotal::update_collection(const std::string& id,
+                                         const std::string& name,
+                                         const std::string& description,
+                                         const std::string& raw_items) {
+    if (id.empty())
+        throw VtError("invalid collection id");
+    if (name.empty() && description.empty() && raw_items.empty())
+        throw VtError("empty collection update");
+    const std::string body = collection_attributes_body(name, description, raw_items);
+    limiter_.wait();
+    const detail::HttpResponse resp =
+        http_.patch(collection_url(base_url_, id), body, "application/json");
+    return collection_from_json(detail::json_or_throw(resp));
+}
+
+void VirusTotal::delete_collection(const std::string& id) {
+    if (id.empty())
+        throw VtError("invalid collection id");
+    limiter_.wait();
+    const detail::HttpResponse resp = http_.del(collection_url(base_url_, id));
+    detail::json_or_throw(resp);
+}
+
+CollectionList VirusTotal::list_collections(int limit, const std::string& cursor,
+                                            const std::string& filter,
+                                            const std::string& order) {
+    if (limit < 1 || limit > 40)
+        throw VtError("collection list limit must be between 1 and 40");
+    const std::string url = append_query(
+        base_url_ + "/collections",
+        {{"limit", std::to_string(limit)}, {"cursor", cursor}, {"filter", filter},
+         {"order", order}});
+    limiter_.wait();
+    const detail::HttpResponse resp = http_.get(url);
+    return collection_list_from_json(detail::json_or_throw(resp));
+}
+
+CommentListResult VirusTotal::get_collection_comments(const std::string& id, int limit,
+                                                      const std::string& cursor) {
+    if (id.empty())
+        throw VtError("invalid collection id");
+    if (limit < 1)
+        throw VtError("invalid comment limit");
+    const std::string url = append_query(
+        collection_url(base_url_, id) + "/comments",
+        {{"limit", std::to_string(limit)}, {"cursor", cursor}});
+    limiter_.wait();
+    const detail::HttpResponse resp = http_.get(url);
+    return comment_list_from_json(detail::json_or_throw(resp));
+}
+
+Comment VirusTotal::post_collection_comment(const std::string& id,
+                                            const std::string& text) {
+    if (id.empty())
+        throw VtError("invalid collection id");
+    if (text.size() > kCommentSizeLimit)
+        throw VtError("comment text exceeds kCommentSizeLimit");
+    limiter_.wait();
+    const detail::HttpResponse resp = http_.post(
+        collection_url(base_url_, id) + "/comments", comment_body(text),
+        "application/json");
+    const nlohmann::json j = detail::json_or_throw(resp);
+    if (j.contains("data"))
+        return comment_from_json(j["data"]);
+    return comment_from_json(j);
+}
+
+void VirusTotal::add_collection_items(const std::string& id,
+                                      const std::string& relationship,
+                                      const std::vector<CollectionElement>& elements) {
+    validate_collection_items(id, relationship, elements);
+    limiter_.wait();
+    const detail::HttpResponse resp = http_.post(
+        collection_url(base_url_, id) + "/" + relationship,
+        collection_items_body(elements), "application/json");
+    detail::json_or_throw(resp);
+}
+
+void VirusTotal::remove_collection_items(const std::string& id,
+                                         const std::string& relationship,
+                                         const std::vector<CollectionElement>& elements) {
+    validate_collection_items(id, relationship, elements);
+    limiter_.wait();
+    const detail::HttpResponse resp = http_.del(
+        collection_url(base_url_, id) + "/" + relationship,
+        collection_items_body(elements), "application/json");
+    detail::json_or_throw(resp);
+}
+
+RelationshipList VirusTotal::get_collection_relationships(
+    const std::string& id, const std::string& relationship, int limit,
+    const std::string& cursor) {
+    if (id.empty() || relationship.empty())
+        throw VtError("invalid collection relationship request");
+    if (limit < 1)
+        throw VtError("invalid relationship limit");
+    const std::string url = append_query(
+        collection_url(base_url_, id) + "/" + relationship,
+        {{"limit", std::to_string(limit)}, {"cursor", cursor}});
+    limiter_.wait();
+    const detail::HttpResponse resp = http_.get(url);
+    return relationship_list_from_json(detail::json_or_throw(resp));
+}
+
+RelationshipList VirusTotal::get_collection_relationship_descriptors(
+    const std::string& id, const std::string& relationship, int limit,
+    const std::string& cursor) {
+    if (id.empty() || relationship.empty())
+        throw VtError("invalid collection relationship request");
+    if (limit < 1)
+        throw VtError("invalid relationship limit");
+    const std::string url = append_query(
+        collection_url(base_url_, id) + "/relationships/" + relationship,
+        {{"limit", std::to_string(limit)}, {"cursor", cursor}});
+    limiter_.wait();
+    const detail::HttpResponse resp = http_.get(url);
+    return relationship_list_from_json(detail::json_or_throw(resp));
+}
+
+std::string VirusTotal::export_collection_iocs(const std::string& id,
+                                               const std::string& format) {
+    if (id.empty())
+        throw VtError("invalid collection id");
+    validate_export_format(format, false);
+    limiter_.wait();
+    const detail::HttpResponse resp = http_.get(
+        collection_url(base_url_, id) + "/download/" + format);
+    return detail::body_or_throw(resp);
+}
+
+std::string VirusTotal::export_collection_relationship_iocs(
+    const std::string& id, const std::string& relationship,
+    const std::string& format) {
+    if (id.empty() || relationship.empty())
+        throw VtError("invalid collection relationship request");
+    validate_export_format(format, false);
+    limiter_.wait();
+    const detail::HttpResponse resp = http_.get(
+        collection_url(base_url_, id) + "/" + relationship + "/download/" + format);
+    return detail::body_or_throw(resp);
+}
+
+std::string VirusTotal::export_collection_aggregations(const std::string& id,
+                                                       const std::string& format) {
+    if (id.empty())
+        throw VtError("invalid collection id");
+    validate_export_format(format, true);
+    limiter_.wait();
+    const detail::HttpResponse resp = http_.get(
+        collection_url(base_url_, id) + "/aggregations/download/" + format);
+    return detail::body_or_throw(resp);
+}
+
+SearchResult VirusTotal::search_collection_iocs(
+    const std::string& id, const std::string& query, int limit,
+    const std::string& cursor, const std::string& order,
+    const std::string& attributes, const std::string& relationships) {
+    if (id.empty() || query.empty())
+        throw VtError("invalid collection search request");
+    if (limit < 1 || limit > 40)
+        throw VtError("collection search limit must be between 1 and 40");
+    const std::string url = append_query(
+        collection_url(base_url_, id) + "/search",
+        {{"query", query}, {"limit", std::to_string(limit)}, {"cursor", cursor},
+         {"order", order}, {"attributes", attributes},
+         {"relationships", relationships}});
+    limiter_.wait();
+    const detail::HttpResponse resp = http_.get(url);
+    return search_result_from_json(detail::json_or_throw(resp));
 }
 
 } // namespace vtapi

@@ -137,6 +137,22 @@ HttpResponse HttpClient::del(const std::string& url,
     return perform(handle, build_headers(headers), nullptr);
 }
 
+HttpResponse HttpClient::del(const std::string& url, const std::string& body,
+                            const std::string& content_type) {
+    CURL* handle = static_cast<CURL*>(curl_);
+    apply_common_options(handle, url);
+    curl_easy_setopt(handle, CURLOPT_CUSTOMREQUEST, "DELETE");
+    if (!body.empty()) {
+        post_buffer_ = body;
+        curl_easy_setopt(handle, CURLOPT_POSTFIELDS, post_buffer_.data());
+        curl_easy_setopt(handle, CURLOPT_POSTFIELDSIZE_LARGE,
+                         static_cast<curl_off_t>(post_buffer_.size()));
+    }
+    curl_slist* headers = build_headers({});
+    headers = curl_slist_append(headers, ("Content-Type: " + content_type).c_str());
+    return perform(handle, headers, nullptr);
+}
+
 HttpResponse HttpClient::patch(const std::string& url, const std::string& body,
                                const std::string& content_type) {
     CURL* handle = static_cast<CURL*>(curl_);
