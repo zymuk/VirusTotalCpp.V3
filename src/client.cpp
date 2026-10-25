@@ -1281,4 +1281,241 @@ SearchResult VirusTotal::search_collection_iocs(
     return search_result_from_json(detail::json_or_throw(resp));
 }
 
+namespace {
+
+std::string graph_url(const std::string& base_url, const std::string& id) {
+    return base_url + "/graphs/" + id;
+}
+
+void validate_graph_attributes(const nlohmann::json& attributes) {
+    if (!attributes.is_object() || attributes.empty())
+        throw VtError("invalid graph attributes");
+}
+
+std::string graph_attributes_body(const nlohmann::json& attributes) {
+    nlohmann::json body;
+    body["data"]["type"] = "graph";
+    body["data"]["attributes"] = attributes;
+    return body.dump();
+}
+
+std::string graph_principals_body(const std::vector<GraphPrincipal>& principals) {
+    nlohmann::json data = nlohmann::json::array();
+    for (const auto& principal : principals) {
+        nlohmann::json descriptor;
+        descriptor["type"] = principal.type;
+        descriptor["id"] = principal.id;
+        data.push_back(std::move(descriptor));
+    }
+    nlohmann::json body;
+    body["data"] = std::move(data);
+    return body.dump();
+}
+
+void validate_graph_principals(const std::vector<GraphPrincipal>& principals) {
+    if (principals.empty())
+        throw VtError("empty graph principal list");
+    for (const auto& principal : principals) {
+        if (principal.type != "user" && principal.type != "group")
+            throw VtError("invalid graph principal type");
+        if (principal.id.empty())
+            throw VtError("invalid graph principal id");
+    }
+}
+
+bool bool_or_throw(const detail::HttpResponse& resp) {
+    const nlohmann::json j = detail::json_or_throw(resp);
+    if (j.contains("data") && j.at("data").is_boolean())
+        return j.at("data").get<bool>();
+    return false;
+}
+
+} // namespace
+
+Graph VirusTotal::create_graph(const nlohmann::json& attributes) {
+    validate_graph_attributes(attributes);
+    const std::string body = graph_attributes_body(attributes);
+    limiter_.wait();
+    const detail::HttpResponse resp =
+        http_.post(base_url_ + "/graphs", body, "application/json");
+    return graph_from_json(detail::json_or_throw(resp));
+}
+
+Graph VirusTotal::get_graph(const std::string& id) {
+    if (id.empty())
+        throw VtError("invalid graph id");
+    limiter_.wait();
+    const detail::HttpResponse resp = http_.get(graph_url(base_url_, id));
+    return graph_from_json(detail::json_or_throw(resp));
+}
+
+Graph VirusTotal::update_graph(const std::string& id,
+                               const nlohmann::json& attributes) {
+    if (id.empty())
+        throw VtError("invalid graph id");
+    validate_graph_attributes(attributes);
+    const std::string body = graph_attributes_body(attributes);
+    limiter_.wait();
+    const detail::HttpResponse resp =
+        http_.patch(graph_url(base_url_, id), body, "application/json");
+    return graph_from_json(detail::json_or_throw(resp));
+}
+
+void VirusTotal::delete_graph(const std::string& id) {
+    if (id.empty())
+        throw VtError("invalid graph id");
+    limiter_.wait();
+    const detail::HttpResponse resp = http_.del(graph_url(base_url_, id));
+    detail::json_or_throw(resp);
+}
+
+GraphList VirusTotal::search_graphs(const std::string& filter, int limit,
+                                    const std::string& cursor,
+                                    const std::string& order,
+                                    const std::string& attributes) {
+    if (limit < 1 || limit > 40)
+        throw VtError("graph search limit must be between 1 and 40");
+    const std::string url = append_query(
+        base_url_ + "/graphs",
+        {{"filter", filter}, {"limit", std::to_string(limit)}, {"cursor", cursor},
+         {"order", order}, {"attributes", attributes}});
+    limiter_.wait();
+    const detail::HttpResponse resp = http_.get(url);
+    return graph_list_from_json(detail::json_or_throw(resp));
+}
+
+CommentListResult VirusTotal::get_graph_comments(const std::string& id, int limit,
+                                                 const std::string& cursor) {
+    if (id.empty())
+        throw VtError("invalid graph id");
+    if (limit < 1)
+        throw VtError("invalid comment limit");
+    const std::string url = append_query(
+        graph_url(base_url_, id) + "/comments",
+        {{"limit", std::to_string(limit)}, {"cursor", cursor}});
+    limiter_.wait();
+    const detail::HttpResponse resp = http_.get(url);
+    return comment_list_from_json(detail::json_or_throw(resp));
+}
+
+Comment VirusTotal::post_graph_comment(const std::string& id,
+                                       const std::string& text) {
+    if (id.empty())
+        throw VtError("invalid graph id");
+    if (text.size() > kCommentSizeLimit)
+        throw VtError("comment text exceeds kCommentSizeLimit");
+    limiter_.wait();
+    const detail::HttpResponse resp = http_.post(
+        graph_url(base_url_, id) + "/comments", comment_body(text),
+        "application/json");
+    const nlohmann::json j = detail::json_or_throw(resp);
+    if (j.contains("data"))
+        return comment_from_json(j["data"]);
+    return comment_from_json(j);
+}
+
+RelationshipList VirusTotal::get_graph_relationships(
+    const std::string& id, const std::string& relationship, int limit,
+    const std::string& cursor) {
+    if (id.empty() || relationship.empty())
+        throw VtError("invalid graph relationship request");
+    if (limit < 1)
+        throw VtError("invalid relationship limit");
+    const std::string url = append_query(
+        graph_url(base_url_, id) + "/" + relationship,
+        {{"limit", std::to_string(limit)}, {"cursor", cursor}});
+    limiter_.wait();
+    const detail::HttpResponse resp = http_.get(url);
+    return relationship_list_from_json(detail::json_or_throw(resp));
+}
+
+RelationshipList VirusTotal::get_graph_relationship_descriptors(
+    const std::string& id, const std::string& relationship, int limit,
+    const std::string& cursor) {
+    if (id.empty() || relationship.empty())
+        throw VtError("invalid graph relationship request");
+    if (limit < 1)
+        throw VtError("invalid relationship limit");
+    const std::string url = append_query(
+        graph_url(base_url_, id) + "/relationships/" + relationship,
+        {{"limit", std::to_string(limit)}, {"cursor", cursor}});
+    limiter_.wait();
+    const detail::HttpResponse resp = http_.get(url);
+    return relationship_list_from_json(detail::json_or_throw(resp));
+}
+
+RelationshipList VirusTotal::get_graph_viewers(const std::string& id, int limit,
+                                               const std::string& cursor) {
+    return get_graph_relationships(id, "viewers", limit, cursor);
+}
+
+RelationshipList VirusTotal::get_graph_editors(const std::string& id, int limit,
+                                               const std::string& cursor) {
+    return get_graph_relationships(id, "editors", limit, cursor);
+}
+
+RelationshipList VirusTotal::add_graph_viewers(
+    const std::string& id, const std::vector<GraphPrincipal>& principals) {
+    if (id.empty())
+        throw VtError("invalid graph id");
+    validate_graph_principals(principals);
+    limiter_.wait();
+    const detail::HttpResponse resp = http_.post(
+        graph_url(base_url_, id) + "/relationships/viewers",
+        graph_principals_body(principals), "application/json");
+    return relationship_list_from_json(detail::json_or_throw(resp));
+}
+
+RelationshipList VirusTotal::add_graph_editors(
+    const std::string& id, const std::vector<GraphPrincipal>& principals) {
+    if (id.empty())
+        throw VtError("invalid graph id");
+    validate_graph_principals(principals);
+    limiter_.wait();
+    const detail::HttpResponse resp = http_.post(
+        graph_url(base_url_, id) + "/relationships/editors",
+        graph_principals_body(principals), "application/json");
+    return relationship_list_from_json(detail::json_or_throw(resp));
+}
+
+bool VirusTotal::check_graph_viewer(const std::string& id,
+                                    const std::string& user_or_group_id) {
+    if (id.empty() || user_or_group_id.empty())
+        throw VtError("invalid graph viewer check");
+    limiter_.wait();
+    const detail::HttpResponse resp = http_.get(
+        graph_url(base_url_, id) + "/relationships/viewers/" + user_or_group_id);
+    return bool_or_throw(resp);
+}
+
+bool VirusTotal::check_graph_editor(const std::string& id,
+                                    const std::string& user_or_group_id) {
+    if (id.empty() || user_or_group_id.empty())
+        throw VtError("invalid graph editor check");
+    limiter_.wait();
+    const detail::HttpResponse resp = http_.get(
+        graph_url(base_url_, id) + "/relationships/editors/" + user_or_group_id);
+    return bool_or_throw(resp);
+}
+
+void VirusTotal::remove_graph_viewer(const std::string& id,
+                                     const std::string& user_or_group_id) {
+    if (id.empty() || user_or_group_id.empty())
+        throw VtError("invalid graph viewer removal");
+    limiter_.wait();
+    const detail::HttpResponse resp = http_.del(
+        graph_url(base_url_, id) + "/relationships/viewers/" + user_or_group_id);
+    detail::json_or_throw(resp);
+}
+
+void VirusTotal::remove_graph_editor(const std::string& id,
+                                     const std::string& user_or_group_id) {
+    if (id.empty() || user_or_group_id.empty())
+        throw VtError("invalid graph editor removal");
+    limiter_.wait();
+    const detail::HttpResponse resp = http_.del(
+        graph_url(base_url_, id) + "/relationships/editors/" + user_or_group_id);
+    detail::json_or_throw(resp);
+}
+
 } // namespace vtapi

@@ -95,6 +95,7 @@ add_library(vtapi
   src/resolution.cpp
   src/analysis.cpp
   src/collection.cpp
+  src/graph.cpp
   src/comment.cpp
   src/search_result.cpp
   src/metadata.cpp

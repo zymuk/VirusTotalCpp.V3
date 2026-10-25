@@ -12,9 +12,9 @@ adds the IP address API: reports, rescanning, comments, votes and relationships.
 relationships) and domain/IP resolutions. **v1.5.1** fixes the JSON bodies used
 when posting comments and votes. **v1.5.2** adds analysis polling and generic
 comments, votes and relationships. **v1.5.3** adds search, metadata and saved
-searches. **v1.6.0** adds collections.
+searches. **v1.6.0** adds collections. **v1.7.0** adds graphs.
 
-## Status - v1.6.0
+## Status - v1.7.0
 
 Implemented:
 
@@ -48,11 +48,12 @@ Implemented:
 - `search(query)`, `get_metadata()` and saved-search CRUD
 - collections: CRUD, comments, IoC add/remove, relationships and descriptors
 - premium collection listing, IoC/aggregation exports and in-collection search
+- graphs: CRUD/search, comments, relationships and viewers/editors ACL
 - CLI `vtapi_eicar` - drive the file and URL flows from a shell
 
 Planned for later releases:
 
-- graphs, feeds and further VirusTotal API v3 endpoints
+- feeds and further VirusTotal API v3 endpoints
 
 Endpoints are implemented one at a time.
 
@@ -228,13 +229,23 @@ arguments prints the usage. Exit codes: `0` success, `1` runtime error,
 | `export_collection_relationship_iocs(id, rel, format = "json")` | `GET /collections/{id}/{rel}/download/{format}` (premium) |
 | `export_collection_aggregations(id, format = "json")` | `GET /collections/{id}/aggregations/download/{format}` (premium) |
 | `search_collection_iocs(id, query, ...)` | `GET /collections/{id}/search` (premium) |
+| `Graph create_graph(attributes)` | `POST /graphs` (attributes = `graph_data`, `nodes`, `links`, `private`) |
+| `Graph get_graph(id)` / `update_graph(id, attributes)` / `delete_graph(id)` | `GET` / `PATCH` / `DELETE /graphs/{id}` |
+| `GraphList search_graphs(filter, limit, cursor, order, attributes)` | `GET /graphs?filter=...` |
+| `get_graph_comments(id, limit, cursor)` / `post_graph_comment(id, text)` | `GET` / `POST /graphs/{id}/comments` |
+| `get_graph_relationships(id, rel, ...)` | `GET /graphs/{id}/{rel}` |
+| `get_graph_relationship_descriptors(id, rel, ...)` | `GET /graphs/{id}/relationships/{rel}` |
+| `get_graph_viewers(id, ...)` / `get_graph_editors(id, ...)` | `GET /graphs/{id}/viewers`, `/editors` |
+| `add_graph_viewers(id, principals)` / `add_graph_editors(...)` | `POST /graphs/{id}/relationships/viewers`, `/editors` |
+| `check_graph_viewer(id, uid)` / `check_graph_editor(id, uid)` | `GET /graphs/{id}/relationships/{viewers\|editors}/{uid}` |
+| `remove_graph_viewer(id, uid)` / `remove_graph_editor(id, uid)` | `DELETE /graphs/{id}/relationships/{viewers\|editors}/{uid}` |
 
 The response models match the v3 JSON payloads (`FileReport` from
 `data.attributes.*`, `ScanResult` from `data.*` plus `meta.file_info.*`,
-`IPReport`, `DomainReport`, `Collection` and `Resolution` from
-`data.attributes.*`, `CommentListResult` / `CollectionList` from `data.*` plus
-`meta.*` and `links.*`). Field names and types follow the real API rather than
-another client library.
+`IPReport`, `DomainReport`, `Collection`, `Graph` and `Resolution` from
+`data.attributes.*`, `CommentListResult` / `CollectionList` / `GraphList` from
+`data.*` plus `meta.*` and `links.*`). Field names and types follow the real API
+rather than another client library.
 
 ## Errors
 

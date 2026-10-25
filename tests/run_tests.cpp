@@ -30,6 +30,7 @@
 #include "vtapi/model/comment.hpp"
 #include "vtapi/model/domain_report.hpp"
 #include "vtapi/model/file_report.hpp"
+#include "vtapi/model/graph.hpp"
 #include "vtapi/model/ip_report.hpp"
 #include "vtapi/model/mitre.hpp"
 #include "vtapi/model/relationship.hpp"
@@ -2942,6 +2943,367 @@ void test_collection_premium() {
     CHECK(hits == before);
 }
 
+void test_graph_model() {
+    const nlohmann::json root = nlohmann::json::parse(load_fixture("graph.json"));
+    const vtapi::Graph g = vtapi::graph_from_json(root);
+    CHECK(g.type == "graph");
+    CHECK(g.id == "g0538d03053194c338643183e315b134ec3463a392330430938033934f3be3f37");
+    CHECK(g.self_link ==
+          "https://www.virustotal.com/api/v3/graphs/"
+          "g0538d03053194c338643183e315b134ec3463a392330430938033934f3be3f37");
+    CHECK(g.comments_count == 2);
+    CHECK(g.creation_date == 1599060646);
+    CHECK(g.last_modified_date == 1599117623);
+    CHECK(g.is_private);
+    CHECK(g.views_count == 2);
+    CHECK(g.graph_data.description == "test");
+    CHECK(g.graph_data.version == "5.0.0");
+    CHECK(g.nodes.size() == 3);
+    CHECK(g.nodes[0].type == "url");
+    CHECK(g.nodes[0].entity_attributes.has_detections);
+    CHECK(!g.nodes[0].has_fx);
+    CHECK(g.nodes[1].type == "ip_address");
+    CHECK(g.nodes[1].entity_attributes.country == "OM");
+    CHECK(g.nodes[1].has_fx && g.nodes[1].has_fy);
+    CHECK(g.nodes[1].fx == -60.42155469411466);
+    CHECK(g.nodes[2].type == "relationship");
+    CHECK(g.nodes[2].text == "path: /");
+    CHECK(g.nodes[2].entity_attributes.relationship_type == "commonality");
+    CHECK(g.nodes[2].entity_attributes.commonalities.size() == 1);
+    CHECK(g.nodes[2].entity_attributes.commonalities[0].commonality == "path");
+    CHECK(g.nodes[2].entity_attributes.commonalities[0].value == "/");
+    CHECK(g.nodes[2].entity_attributes.raw.contains("commonalities"));
+    CHECK(g.links.size() == 2);
+    CHECK(g.links[0].connection_type == "last_serving_ip_address");
+    CHECK(g.links[1].target == "138.133.35.39");
+    CHECK(g.raw.contains("data"));
+
+    const vtapi::Graph sparse =
+        vtapi::graph_from_json(nlohmann::json::parse(R"json({"data":{"id":"x"}})json"));
+    CHECK(sparse.id == "x");
+    CHECK(!sparse.is_private);
+    CHECK(sparse.nodes.empty());
+    CHECK(sparse.links.empty());
+
+    const vtapi::Graph weird = vtapi::graph_from_json(nlohmann::json::array());
+    CHECK(weird.id.empty());
+
+    const vtapi::GraphList list = vtapi::graph_list_from_json(
+        nlohmann::json::parse(R"json({
+            "data":[{"type":"graph","id":"g1"},{"type":"graph","id":"g2"}],
+            "meta":{"count":2},
+            "links":{"self":"https://x/api/v3/graphs","next":"https://x/api/v3/graphs?cursor=n"}
+        })json"));
+    CHECK(list.count == 2);
+    CHECK(list.data.size() == 2);
+    CHECK(list.data[1].id == "g2");
+    CHECK(list.self_link == "https://x/api/v3/graphs");
+    CHECK(list.next_link == "https://x/api/v3/graphs?cursor=n");
+
+    const vtapi::GraphList empty =
+        vtapi::graph_list_from_json(nlohmann::json::array());
+    CHECK(empty.data.empty());
+}
+
+void test_graph_crud_and_search() {
+    const std::string kKey(64, 'j');
+    const std::string kId = "g0538d03053194c338643183e315b134ec3463a392330430938033934f3be3f37";
+
+    vtapi::ClientOptions opt;
+    opt.api_key = kKey;
+    opt.verify_ssl = false;
+    opt.timeout = std::chrono::seconds(5);
+    opt.requests_per_minute = 0.0;
+
+    std::string create_body;
+    std::string update_body;
+    bool deleted = false;
+    MockServer server([&](const MockRequest& req) -> MockResponse {
+        if (req.method == "POST" && req.path == "/graphs") {
+            create_body = req.body;
+            return {200, R"({"data":{"type":"graph","id":"g1"}})",
+                    "application/json"};
+        }
+        if (req.method == "GET" && req.path == "/graphs/" + kId)
+            return {200, load_fixture("graph.json"), "application/json"};
+        if (req.method == "PATCH" && req.path == "/graphs/" + kId) {
+            update_body = req.body;
+            return {200, load_fixture("graph.json"), "application/json"};
+        }
+        if (req.method == "DELETE" && req.path == "/graphs/" + kId) {
+            deleted = true;
+            return {200, "{}", "application/json"};
+        }
+        if (req.method == "GET" &&
+            req.path == "/graphs?filter=name%3Atest%20graph&limit=5&order=creation_date-") {
+            return {200,
+                    R"({"data":[{"type":"graph","id":"g1","attributes":{"private":false}}],"meta":{"count":1},"links":{"self":"https://x/graphs","next":"https://x/graphs?cursor=n"}})",
+                    "application/json"};
+        }
+        if (req.method == "GET" && req.path == "/graphs/missing")
+            return {404, R"({"error":{"code":"NotFoundError","message":"not found"}})",
+                    "application/json"};
+        return {400, "unexpected request"};
+    });
+    opt.base_url = server.url("");
+    vtapi::VirusTotal vt{opt};
+
+    nlohmann::json attributes = {
+        {"private", true},
+        {"graph_data", {{"description", "demo"}, {"version", "5.0.0"}}},
+        {"nodes", nlohmann::json::array({{{"type", "domain"},
+                                          {"entity_id", "example.com"},
+                                          {"index", 0}}})},
+        {"links", nlohmann::json::array()},
+    };
+
+    const vtapi::Graph created = vt.create_graph(attributes);
+    CHECK(created.id == "g1");
+    CHECK(create_body.find("\"type\":\"graph\"") != std::string::npos);
+    CHECK(create_body.find("\"attributes\"") != std::string::npos);
+    CHECK(create_body.find("\"description\":\"demo\"") != std::string::npos);
+
+    const vtapi::Graph fetched = vt.get_graph(kId);
+    CHECK(fetched.id == kId);
+    CHECK(fetched.nodes.size() == 3);
+
+    const vtapi::Graph updated =
+        vt.update_graph(kId, {{"private", false}});
+    CHECK(updated.id == kId);
+    CHECK(update_body.find("\"private\":false") != std::string::npos);
+    CHECK(update_body.find("\"type\":\"graph\"") != std::string::npos);
+
+    vt.delete_graph(kId);
+    CHECK(deleted);
+
+    const vtapi::GraphList found =
+        vt.search_graphs("name:test graph", 5, "", "creation_date-");
+    CHECK(found.count == 1);
+    CHECK(found.data.size() == 1);
+    CHECK(found.data[0].id == "g1");
+    CHECK(found.next_link.find("cursor=n") != std::string::npos);
+
+    CHECK_THROWS_AS(vt.get_graph("missing"), vtapi::NotFound);
+    CHECK_THROWS_AS(vt.get_graph(""), vtapi::VtError);
+    CHECK_THROWS_AS(vt.create_graph(nlohmann::json::object()), vtapi::VtError);
+    CHECK_THROWS_AS(vt.create_graph(nlohmann::json::array()), vtapi::VtError);
+    CHECK_THROWS_AS(vt.update_graph("", {{"private", true}}), vtapi::VtError);
+    CHECK_THROWS_AS(vt.update_graph(kId, nlohmann::json::object()), vtapi::VtError);
+    CHECK_THROWS_AS(vt.delete_graph(""), vtapi::VtError);
+    CHECK_THROWS_AS(vt.search_graphs("", 0), vtapi::VtError);
+    CHECK_THROWS_AS(vt.search_graphs("", 41), vtapi::VtError);
+
+    // Local validation must not spend a request.
+    int hits = 0;
+    MockServer counted([&hits](const MockRequest&) -> MockResponse {
+        ++hits;
+        return {200, "{}", "application/json"};
+    });
+    opt.base_url = counted.url("");
+    vtapi::VirusTotal local{opt};
+    CHECK_THROWS_AS(local.get_graph(""), vtapi::VtError);
+    CHECK_THROWS_AS(local.create_graph(nlohmann::json::object()), vtapi::VtError);
+    CHECK_THROWS_AS(local.update_graph(kId, nlohmann::json::object()), vtapi::VtError);
+    CHECK_THROWS_AS(local.delete_graph(""), vtapi::VtError);
+    CHECK_THROWS_AS(local.search_graphs("", 0), vtapi::VtError);
+    CHECK_THROWS_AS(local.search_graphs("", 41), vtapi::VtError);
+    CHECK(hits == 0);
+}
+
+void test_graph_comments_and_relationships() {
+    const std::string kKey(64, 'k');
+    const std::string kId = "g0538d03053194c338643183e315b134ec3463a392330430938033934f3be3f37";
+
+    vtapi::ClientOptions opt;
+    opt.api_key = kKey;
+    opt.verify_ssl = false;
+    opt.timeout = std::chrono::seconds(5);
+    opt.requests_per_minute = 0.0;
+
+    std::string comment_body;
+    MockServer server([&](const MockRequest& req) -> MockResponse {
+        if (req.method == "GET" &&
+            req.path == "/graphs/" + kId + "/comments?limit=5&cursor=next") {
+            return {200,
+                    R"({"data":[{"type":"comment","id":"c1","attributes":{"text":"graph note","date":7,"votes":{"positive":2,"negative":1}}}],"links":{"self":"https://x/comments"}})",
+                    "application/json"};
+        }
+        if (req.method == "POST" && req.path == "/graphs/" + kId + "/comments") {
+            comment_body = req.body;
+            return {200,
+                    R"({"data":{"type":"comment","id":"c2","attributes":{"text":"hello","date":8,"votes":{"positive":0,"negative":0}}}})",
+                    "application/json"};
+        }
+        if (req.method == "GET" &&
+            req.path == "/graphs/" + kId + "/items?limit=2&cursor=next") {
+            return {200,
+                    R"({"data":[{"type":"file","id":"275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f","attributes":{"sha256":"275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f"}}],"meta":{"count":1},"links":{"self":"https://x/graphs/g/items","next":"https://x/graphs/g/items?cursor=n"}})",
+                    "application/json"};
+        }
+        if (req.method == "GET" &&
+            req.path == "/graphs/" + kId + "/relationships/items?limit=2") {
+            return {200,
+                    R"({"data":[{"type":"file","id":"275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f"}],"meta":{"count":1}})",
+                    "application/json"};
+        }
+        return {400, "unexpected request"};
+    });
+    opt.base_url = server.url("");
+    vtapi::VirusTotal vt{opt};
+
+    const vtapi::CommentListResult comments = vt.get_graph_comments(kId, 5, "next");
+    CHECK(comments.data.size() == 1);
+    CHECK(comments.data[0].text == "graph note");
+    CHECK(comments.data[0].votes_positive == 2);
+
+    const vtapi::Comment posted = vt.post_graph_comment(kId, "hello #graph");
+    CHECK(posted.id == "c2");
+    CHECK(comment_body.find("\"type\":\"comment\"") != std::string::npos);
+    CHECK(comment_body.find("\"text\":\"hello #graph\"") != std::string::npos);
+
+    const vtapi::RelationshipList full =
+        vt.get_graph_relationships(kId, "items", 2, "next");
+    CHECK(full.count == 1);
+    CHECK(full.objects.size() == 1);
+    CHECK(full.objects[0].type == "file");
+    CHECK(full.objects[0].raw.contains("attributes"));
+    CHECK(full.next_link.find("cursor=n") != std::string::npos);
+
+    const vtapi::RelationshipList descriptors =
+        vt.get_graph_relationship_descriptors(kId, "items", 2);
+    CHECK(descriptors.count == 1);
+    CHECK(descriptors.objects.size() == 1);
+    CHECK(!descriptors.objects[0].raw.contains("attributes"));
+
+    const std::string too_long(vtapi::kCommentSizeLimit + 1, 'x');
+    CHECK_THROWS_AS(vt.post_graph_comment(kId, too_long), vtapi::VtError);
+    CHECK_THROWS_AS(vt.get_graph_comments("", 5), vtapi::VtError);
+    CHECK_THROWS_AS(vt.get_graph_comments(kId, 0), vtapi::VtError);
+    CHECK_THROWS_AS(vt.get_graph_relationships("", "items"), vtapi::VtError);
+    CHECK_THROWS_AS(vt.get_graph_relationships(kId, ""), vtapi::VtError);
+    CHECK_THROWS_AS(vt.get_graph_relationships(kId, "items", 0), vtapi::VtError);
+    CHECK_THROWS_AS(vt.get_graph_relationship_descriptors("", "items"),
+                    vtapi::VtError);
+    CHECK_THROWS_AS(vt.get_graph_relationship_descriptors(kId, ""),
+                    vtapi::VtError);
+    CHECK_THROWS_AS(vt.get_graph_relationship_descriptors(kId, "items", 0),
+                    vtapi::VtError);
+}
+
+void test_graph_acl() {
+    const std::string kKey(64, 'l');
+    const std::string kId = "g0538d03053194c338643183e315b134ec3463a392330430938033934f3be3f37";
+
+    vtapi::ClientOptions opt;
+    opt.api_key = kKey;
+    opt.verify_ssl = false;
+    opt.timeout = std::chrono::seconds(5);
+    opt.requests_per_minute = 0.0;
+
+    std::string add_viewer_body;
+    std::string add_editor_body;
+    bool removed_viewer = false;
+    bool removed_editor = false;
+    MockServer server([&](const MockRequest& req) -> MockResponse {
+        if (req.method == "GET" &&
+            req.path == "/graphs/" + kId + "/viewers?limit=2&cursor=next") {
+            return {200,
+                    R"({"data":[{"type":"user","id":"gilfoyle"}],"meta":{"count":1},"links":{"self":"https://x/graphs/g/viewers?limit=2"}})",
+                    "application/json"};
+        }
+        if (req.method == "GET" &&
+            req.path == "/graphs/" + kId + "/editors?limit=2") {
+            return {200,
+                    R"({"data":[{"type":"group","id":"piedpiper"}],"meta":{"count":1}})",
+                    "application/json"};
+        }
+        if (req.method == "POST" &&
+            req.path == "/graphs/" + kId + "/relationships/viewers") {
+            add_viewer_body = req.body;
+            return {200,
+                    R"({"data":[{"type":"user","id":"gilfoyle"}]})",
+                    "application/json"};
+        }
+        if (req.method == "POST" &&
+            req.path == "/graphs/" + kId + "/relationships/editors") {
+            add_editor_body = req.body;
+            return {200,
+                    R"({"data":[{"type":"group","id":"piedpiper"}]})",
+                    "application/json"};
+        }
+        if (req.method == "GET" &&
+            req.path == "/graphs/" + kId + "/relationships/viewers/gilfoyle")
+            return {200, R"({"data":true})", "application/json"};
+        if (req.method == "GET" &&
+            req.path == "/graphs/" + kId + "/relationships/editors/piedpiper")
+            return {200, R"({"data":false})", "application/json"};
+        if (req.method == "DELETE" &&
+            req.path == "/graphs/" + kId + "/relationships/viewers/gilfoyle") {
+            removed_viewer = true;
+            return {200, "{}", "application/json"};
+        }
+        if (req.method == "DELETE" &&
+            req.path == "/graphs/" + kId + "/relationships/editors/piedpiper") {
+            removed_editor = true;
+            return {200, "{}", "application/json"};
+        }
+        return {400, "unexpected request"};
+    });
+    opt.base_url = server.url("");
+    vtapi::VirusTotal vt{opt};
+
+    const vtapi::RelationshipList viewers = vt.get_graph_viewers(kId, 2, "next");
+    CHECK(viewers.count == 1);
+    CHECK(viewers.objects.size() == 1);
+    CHECK(viewers.objects[0].type == "user");
+    CHECK(viewers.objects[0].id == "gilfoyle");
+
+    const vtapi::RelationshipList editors = vt.get_graph_editors(kId, 2);
+    CHECK(editors.objects.size() == 1);
+    CHECK(editors.objects[0].type == "group");
+
+    const vtapi::RelationshipList granted =
+        vt.add_graph_viewers(kId, {{"user", "gilfoyle"}});
+    CHECK(granted.objects.size() == 1);
+    CHECK(add_viewer_body.find("\"data\":[") != std::string::npos);
+    CHECK(add_viewer_body.find("\"type\":\"user\"") != std::string::npos);
+    CHECK(add_viewer_body.find("\"id\":\"gilfoyle\"") != std::string::npos);
+
+    const vtapi::RelationshipList granted_editors =
+        vt.add_graph_editors(kId, {{"group", "piedpiper"}});
+    CHECK(granted_editors.objects.size() == 1);
+    CHECK(add_editor_body.find("\"type\":\"group\"") != std::string::npos);
+
+    CHECK(vt.check_graph_viewer(kId, "gilfoyle"));
+    CHECK(!vt.check_graph_editor(kId, "piedpiper"));
+
+    vt.remove_graph_viewer(kId, "gilfoyle");
+    vt.remove_graph_editor(kId, "piedpiper");
+    CHECK(removed_viewer);
+    CHECK(removed_editor);
+
+    CHECK_THROWS_AS(vt.get_graph_viewers("", 2), vtapi::VtError);
+    CHECK_THROWS_AS(vt.get_graph_viewers(kId, 0), vtapi::VtError);
+    CHECK_THROWS_AS(vt.get_graph_editors("", 2), vtapi::VtError);
+    CHECK_THROWS_AS(vt.get_graph_editors(kId, 0), vtapi::VtError);
+    CHECK_THROWS_AS(vt.add_graph_viewers("", {{"user", "gilfoyle"}}),
+                    vtapi::VtError);
+    CHECK_THROWS_AS(vt.add_graph_viewers(kId, {}), vtapi::VtError);
+    CHECK_THROWS_AS(vt.add_graph_viewers(kId, {{"robot", "x"}}), vtapi::VtError);
+    CHECK_THROWS_AS(vt.add_graph_viewers(kId, {{"user", ""}}), vtapi::VtError);
+    CHECK_THROWS_AS(vt.add_graph_editors("", {{"user", "gilfoyle"}}),
+                    vtapi::VtError);
+    CHECK_THROWS_AS(vt.add_graph_editors(kId, {}), vtapi::VtError);
+    CHECK_THROWS_AS(vt.check_graph_viewer("", "gilfoyle"), vtapi::VtError);
+    CHECK_THROWS_AS(vt.check_graph_viewer(kId, ""), vtapi::VtError);
+    CHECK_THROWS_AS(vt.check_graph_editor("", "piedpiper"), vtapi::VtError);
+    CHECK_THROWS_AS(vt.check_graph_editor(kId, ""), vtapi::VtError);
+    CHECK_THROWS_AS(vt.remove_graph_viewer("", "gilfoyle"), vtapi::VtError);
+    CHECK_THROWS_AS(vt.remove_graph_viewer(kId, ""), vtapi::VtError);
+    CHECK_THROWS_AS(vt.remove_graph_editor("", "piedpiper"), vtapi::VtError);
+    CHECK_THROWS_AS(vt.remove_graph_editor(kId, ""), vtapi::VtError);
+}
+
 void test_check_then_scan_round_trip() {
     const std::string kKey(64, 'a');
     const std::string kEicar =
@@ -3314,6 +3676,10 @@ int main() {
     test_collection_comments_and_items();
     test_collection_relationships();
     test_collection_premium();
+    test_graph_model();
+    test_graph_crud_and_search();
+    test_graph_comments_and_relationships();
+    test_graph_acl();
 #ifndef _WIN32
     test_cli_report();
     test_cli_scan_file();

@@ -17,6 +17,7 @@
 #include "vtapi/model/behaviour.hpp"
 #include "vtapi/model/domain_report.hpp"
 #include "vtapi/model/file_report.hpp"
+#include "vtapi/model/graph.hpp"
 #include "vtapi/model/ip_report.hpp"
 #include "vtapi/model/url_report.hpp"
 #include "vtapi/model/mitre.hpp"
@@ -317,6 +318,54 @@ public:
                                         const std::string& order = {},
                                         const std::string& attributes = {},
                                         const std::string& relationships = {});
+
+    // Graphs (POST/GET/PATCH/DELETE /graphs[/{id}]). The attributes object is
+    // forwarded verbatim inside data.attributes so callers can send graph_data,
+    // nodes, links and private without the client reshaping them.
+    Graph create_graph(const nlohmann::json& attributes);
+    Graph get_graph(const std::string& id);
+    Graph update_graph(const std::string& id, const nlohmann::json& attributes);
+    void delete_graph(const std::string& id);
+
+    // Graph search (GET /graphs?filter=...).
+    GraphList search_graphs(const std::string& filter = {}, int limit = 10,
+                            const std::string& cursor = {},
+                            const std::string& order = {},
+                            const std::string& attributes = {});
+
+    // Graph comments (reuse the M8 Comment model).
+    CommentListResult get_graph_comments(const std::string& id, int limit = 10,
+                                         const std::string& cursor = {});
+    Comment post_graph_comment(const std::string& id, const std::string& text);
+
+    // Graph relationships: full objects (/graphs/{id}/{relationship}) and
+    // descriptors (/graphs/{id}/relationships/{relationship}).
+    RelationshipList get_graph_relationships(const std::string& id,
+                                             const std::string& relationship,
+                                             int limit = 10,
+                                             const std::string& cursor = {});
+    RelationshipList get_graph_relationship_descriptors(
+        const std::string& id, const std::string& relationship, int limit = 10,
+        const std::string& cursor = {});
+
+    // Graph ACL. Listing/granting uses the relationships endpoints; checking and
+    // revoking target a single user or group id.
+    RelationshipList get_graph_viewers(const std::string& id, int limit = 10,
+                                       const std::string& cursor = {});
+    RelationshipList get_graph_editors(const std::string& id, int limit = 10,
+                                       const std::string& cursor = {});
+    RelationshipList add_graph_viewers(const std::string& id,
+                                       const std::vector<GraphPrincipal>& principals);
+    RelationshipList add_graph_editors(const std::string& id,
+                                       const std::vector<GraphPrincipal>& principals);
+    bool check_graph_viewer(const std::string& id,
+                            const std::string& user_or_group_id);
+    bool check_graph_editor(const std::string& id,
+                            const std::string& user_or_group_id);
+    void remove_graph_viewer(const std::string& id,
+                             const std::string& user_or_group_id);
+    void remove_graph_editor(const std::string& id,
+                             const std::string& user_or_group_id);
 
 private:
     detail::HttpClient http_;
