@@ -1,3 +1,5 @@
+#include <thread>
+
 #include "vtapi/client.hpp"
 
 #include <filesystem>
@@ -667,6 +669,345 @@ Resolution VirusTotal::get_resolution(const std::string& id) {
     limiter_.wait();
     const detail::HttpResponse resp = http_.get(base_url_ + "/resolutions/" + id);
     return resolution_from_json(detail::json_or_throw(resp));
+}
+
+AnalysisReport VirusTotal::get_analysis(const std::string& id) {
+    if (id.empty())
+        throw VtError("invalid analysis id");
+    limiter_.wait();
+    const detail::HttpResponse resp = http_.get(base_url_ + "/analyses/" + id);
+    return analysis_report_from_json(detail::json_or_throw(resp));
+}
+
+AnalysisReport VirusTotal::await_analysis(const std::string& id,
+                                         std::chrono::seconds timeout,
+                                         std::chrono::seconds interval) {
+    if (id.empty())
+        throw VtError("invalid analysis id");
+    if (interval < std::chrono::seconds(2))
+        interval = std::chrono::seconds(2);
+    if (timeout < interval)
+        timeout = interval;
+
+    const auto start = std::chrono::steady_clock::now();
+    AnalysisReport last;
+    while (true) {
+        last = get_analysis(id);
+        if (last.status == "completed")
+            return last;
+        const auto now = std::chrono::steady_clock::now();
+        if (now - start >= timeout)
+            throw VtError("await_analysis timed out");
+        std::this_thread::sleep_for(interval);
+    }
+}
+
+namespace {
+
+bool is_valid_object_type(const std::string& t) {
+    return t == "files" || t == "urls" || t == "domains" || t == "ip_addresses" ||
+           t == "comments" || t == "analyses";
+}
+
+} // namespace
+
+CommentListResult VirusTotal::get_comments(const std::string& object_type,
+                                          const std::string& object_id) {
+    if (!is_valid_object_type(object_type))
+        throw VtError("invalid object type");
+    if (object_id.empty())
+        throw VtError("invalid object id");
+    if (object_type == "files" && !is_hex_hash(object_id))
+        throw VtError("invalid hash: expected 32/40/64 hex characters");
+    if (object_type == "ip_addresses" && !is_valid_ip(object_id))
+        throw VtError("invalid ip address");
+    if (object_type == "domains" && !is_valid_domain(object_id))
+        throw VtError("invalid domain");
+    if (object_type == "urls") {
+        // allow raw url or base64url id; if it looks like url require ://
+        if (object_id.find("://") != std::string::npos &&
+            (object_id.empty() || object_id.find("://") == std::string::npos))
+            throw VtError("invalid url");
+        // if it's a raw url, convert later? but we need id for path; use as-is if not url form? handle in path
+    }
+
+    std::string id = object_id;
+    if (object_type == "urls" && object_id.find("://") != std::string::npos) {
+        id = detail::base64url_encode(object_id);
+    }
+
+    limiter_.wait();
+    const detail::HttpResponse resp =
+        http_.get(base_url_ + "/" + object_type + "/" + id + "/comments");
+    return comment_list_from_json(detail::json_or_throw(resp));
+}
+
+CommentListResult VirusTotal::get_comments_latest() {
+    limiter_.wait();
+    const detail::HttpResponse resp = http_.get(base_url_ + "/comments");
+    return comment_list_from_json(detail::json_or_throw(resp));
+}
+
+Comment VirusTotal::get_comment(const std::string& comment_id) {
+    if (comment_id.empty())
+        throw VtError("invalid comment id");
+    limiter_.wait();
+    const detail::HttpResponse resp = http_.get(base_url_ + "/comments/" + comment_id);
+    const nlohmann::json j = detail::json_or_throw(resp);
+    if (j.contains("data"))
+        return comment_from_json(j["data"]);
+    return comment_from_json(j);
+}
+
+void VirusTotal::delete_comment(const std::string& comment_id) {
+    if (comment_id.empty())
+        throw VtError("invalid comment id");
+    limiter_.wait();
+    const detail::HttpResponse resp = http_.del(base_url_ + "/comments/" + comment_id);
+    detail::json_or_throw(resp);
+}
+
+void VirusTotal::post_comment(const std::string& object_type, const std::string& object_id,
+                              const std::string& text) {
+    if (!is_valid_object_type(object_type))
+        throw VtError("invalid object type");
+    if (object_id.empty())
+        throw VtError("invalid object id");
+    if (text.size() > kCommentSizeLimit)
+        throw VtError("comment text exceeds kCommentSizeLimit");
+    if (object_type == "files" && !is_hex_hash(object_id))
+        throw VtError("invalid hash: expected 32/40/64 hex characters");
+    if (object_type == "ip_addresses" && !is_valid_ip(object_id))
+        throw VtError("invalid ip address");
+    if (object_type == "domains" && !is_valid_domain(object_id))
+        throw VtError("invalid domain");
+
+    std::string id = object_id;
+    if (object_type == "urls" && object_id.find("://") != std::string::npos) {
+        id = detail::base64url_encode(object_id);
+    }
+
+    limiter_.wait();
+    const detail::HttpResponse resp = http_.post(base_url_ + "/" + object_type + "/" + id + "/comments",
+                                                  comment_body(text), "application/json");
+    detail::json_or_throw(resp);
+}
+
+void VirusTotal::vote_comment(const std::string& comment_id, bool positive) {
+    if (comment_id.empty())
+        throw VtError("invalid comment id");
+    limiter_.wait();
+    const detail::HttpResponse resp = http_.post(base_url_ + "/comments/" + comment_id + "/votes",
+                                                  vote_body(positive), "application/json");
+    detail::json_or_throw(resp);
+}
+
+void VirusTotal::put_vote(const std::string& object_type, const std::string& object_id,
+                          bool positive) {
+    if (!is_valid_object_type(object_type) || object_type == "comments")
+        throw VtError("invalid object type");
+    if (object_id.empty())
+        throw VtError("invalid object id");
+    if (object_type == "files" && !is_hex_hash(object_id))
+        throw VtError("invalid hash: expected 32/40/64 hex characters");
+    if (object_type == "ip_addresses" && !is_valid_ip(object_id))
+        throw VtError("invalid ip address");
+    if (object_type == "domains" && !is_valid_domain(object_id))
+        throw VtError("invalid domain");
+
+    std::string id = object_id;
+    if (object_type == "urls" && object_id.find("://") != std::string::npos) {
+        id = detail::base64url_encode(object_id);
+    }
+
+    limiter_.wait();
+    const detail::HttpResponse resp = http_.post(base_url_ + "/" + object_type + "/" + id + "/votes",
+                                                  vote_body(positive), "application/json");
+    detail::json_or_throw(resp);
+}
+
+std::string VirusTotal::get_votes(const std::string& object_type, const std::string& object_id) {
+    if (!is_valid_object_type(object_type) || object_type == "comments")
+        throw VtError("invalid object type");
+    if (object_id.empty())
+        throw VtError("invalid object id");
+    if (object_type == "files" && !is_hex_hash(object_id))
+        throw VtError("invalid hash: expected 32/40/64 hex characters");
+    if (object_type == "ip_addresses" && !is_valid_ip(object_id))
+        throw VtError("invalid ip address");
+    if (object_type == "domains" && !is_valid_domain(object_id))
+        throw VtError("invalid domain");
+
+    std::string id = object_id;
+    if (object_type == "urls" && object_id.find("://") != std::string::npos) {
+        id = detail::base64url_encode(object_id);
+    }
+
+    limiter_.wait();
+    const detail::HttpResponse resp = http_.get(base_url_ + "/" + object_type + "/" + id + "/votes");
+    return detail::json_or_throw(resp).dump();
+}
+
+std::string VirusTotal::get_relationships(const std::string& object_type,
+                                         const std::string& object_id,
+                                         const std::string& relationship) {
+    if (!is_valid_object_type(object_type))
+        throw VtError("invalid object type");
+    if (object_id.empty() || relationship.empty())
+        throw VtError("invalid relationship request");
+    if (object_type == "files" && !is_hex_hash(object_id))
+        throw VtError("invalid hash: expected 32/40/64 hex characters");
+    if (object_type == "ip_addresses" && !is_valid_ip(object_id))
+        throw VtError("invalid ip address");
+    if (object_type == "domains" && !is_valid_domain(object_id))
+        throw VtError("invalid domain");
+    if (object_type == "analyses" && object_id.empty())
+        throw VtError("invalid analysis id");
+
+    std::string id = object_id;
+    if (object_type == "urls" && object_id.find("://") != std::string::npos) {
+        id = detail::base64url_encode(object_id);
+    }
+
+    limiter_.wait();
+    const detail::HttpResponse resp =
+        http_.get(base_url_ + "/" + object_type + "/" + id + "/relationships/" + relationship);
+    return detail::json_or_throw(resp).dump();
+}
+
+std::string VirusTotal::get_relationship_descriptor(const std::string& object_type,
+                                                   const std::string& object_id,
+                                                   const std::string& relationship,
+                                                   const std::string& related_id) {
+    if (!is_valid_object_type(object_type))
+        throw VtError("invalid object type");
+    if (object_id.empty() || relationship.empty() || related_id.empty())
+        throw VtError("invalid relationship request");
+    if (object_type == "files" && !is_hex_hash(object_id))
+        throw VtError("invalid hash: expected 32/40/64 hex characters");
+    if (object_type == "ip_addresses" && !is_valid_ip(object_id))
+        throw VtError("invalid ip address");
+    if (object_type == "domains" && !is_valid_domain(object_id))
+        throw VtError("invalid domain");
+    if (object_type == "analyses" && object_id.empty())
+        throw VtError("invalid analysis id");
+
+    std::string id = object_id;
+    if (object_type == "urls" && object_id.find("://") != std::string::npos) {
+        id = detail::base64url_encode(object_id);
+    }
+
+    limiter_.wait();
+    const detail::HttpResponse resp = http_.get(
+        base_url_ + "/" + object_type + "/" + id + "/relationships/" + relationship + "/" + related_id);
+    return detail::json_or_throw(resp).dump();
+}
+
+SearchResult VirusTotal::search(const std::string& query) {
+    if (query.empty())
+        throw VtError("invalid search query");
+    limiter_.wait();
+    // v3 search uses query parameter; base_url may have trailing slash not typical
+    std::string url = base_url_ + "/search?query=" + detail::percent_encode(query);
+    const detail::HttpResponse resp = http_.get(url);
+    return search_result_from_json(detail::json_or_throw(resp));
+}
+
+std::string VirusTotal::intelligence_search(const std::string& query) {
+    if (query.empty())
+        throw VtError("invalid search query");
+    nlohmann::json body;
+    body["query"] = query;
+    limiter_.wait();
+    const detail::HttpResponse resp =
+        http_.post(base_url_ + "/intelligence/search", body.dump(), "application/json");
+    return detail::json_or_throw(resp).dump();
+}
+
+std::string VirusTotal::get_search_snippets(const std::string& query) {
+    if (query.empty())
+        throw VtError("invalid search query");
+    limiter_.wait();
+    std::string url = base_url_ + "/intelligence/search/snippets?query=" + detail::percent_encode(query);
+    const detail::HttpResponse resp = http_.get(url);
+    return detail::json_or_throw(resp).dump();
+}
+
+Metadata VirusTotal::get_metadata() {
+    limiter_.wait();
+    const detail::HttpResponse resp = http_.get(base_url_ + "/metadata");
+    return metadata_from_json(detail::json_or_throw(resp));
+}
+
+SavedSearchList VirusTotal::get_saved_searches() {
+    limiter_.wait();
+    try {
+        const detail::HttpResponse resp = http_.get(base_url_ + "/user_saved_searches");
+        return saved_search_list_from_json(detail::json_or_throw(resp));
+    } catch (const NotFound&) {
+        SavedSearchList empty;
+        return empty;
+    }
+}
+
+SavedSearch VirusTotal::get_saved_search(const std::string& id) {
+    if (id.empty())
+        throw VtError("invalid saved search id");
+    limiter_.wait();
+    try {
+        const detail::HttpResponse resp = http_.get(base_url_ + "/user_saved_searches/" + id);
+        const nlohmann::json j = detail::json_or_throw(resp);
+        if (j.contains("data"))
+            return saved_search_from_json(j["data"]);
+        return saved_search_from_json(j);
+    } catch (const NotFound&) {
+        SavedSearch s;
+        return s;
+    }
+}
+
+SavedSearch VirusTotal::create_saved_search(const std::string& name, const std::string& query) {
+    if (name.empty() || query.empty())
+        throw VtError("invalid saved search");
+    nlohmann::json body;
+    body["data"]["type"] = "user_saved_search";
+    body["data"]["attributes"]["name"] = name;
+    body["data"]["attributes"]["query"] = query;
+    limiter_.wait();
+    const detail::HttpResponse resp =
+        http_.post(base_url_ + "/user_saved_searches", body.dump(), "application/json");
+    const nlohmann::json j = detail::json_or_throw(resp);
+    if (j.contains("data"))
+        return saved_search_from_json(j["data"]);
+    return saved_search_from_json(j);
+}
+
+SavedSearch VirusTotal::update_saved_search(const std::string& id, const std::string& name,
+                                            const std::string& query) {
+    if (id.empty())
+        throw VtError("invalid saved search id");
+    nlohmann::json body;
+    body["data"]["type"] = "user_saved_search";
+    body["data"]["id"] = id;
+    if (!name.empty())
+        body["data"]["attributes"]["name"] = name;
+    if (!query.empty())
+        body["data"]["attributes"]["query"] = query;
+    limiter_.wait();
+    const detail::HttpResponse resp =
+        http_.patch(base_url_ + "/user_saved_searches/" + id, body.dump(), "application/json");
+    const nlohmann::json j = detail::json_or_throw(resp);
+    if (j.contains("data"))
+        return saved_search_from_json(j["data"]);
+    return saved_search_from_json(j);
+}
+
+void VirusTotal::delete_saved_search(const std::string& id) {
+    if (id.empty())
+        throw VtError("invalid saved search id");
+    limiter_.wait();
+    const detail::HttpResponse resp = http_.del(base_url_ + "/user_saved_searches/" + id);
+    detail::json_or_throw(resp);
 }
 
 } // namespace vtapi

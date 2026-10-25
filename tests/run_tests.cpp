@@ -24,7 +24,9 @@
 #include "vtapi/detail/ratelimit.hpp"
 #include "vtapi/detail/response.hpp"
 #include "vtapi/detail/url.hpp"
+#include "vtapi/model/analysis.hpp"
 #include "vtapi/model/behaviour.hpp"
+#include "vtapi/model/comment.hpp"
 #include "vtapi/model/domain_report.hpp"
 #include "vtapi/model/file_report.hpp"
 #include "vtapi/model/ip_report.hpp"
@@ -956,6 +958,290 @@ void test_get_resolution() {
 
     // Empty id → VtError before any HTTP request.
     CHECK_THROWS_AS(not_found.get_resolution(""), vtapi::VtError);
+}
+
+void test_analysis() {
+    const nlohmann::json root =
+        nlohmann::json::parse(load_fixture("analysis.json"));
+    const vtapi::AnalysisReport a = vtapi::analysis_report_from_json(root);
+
+    CHECK(a.type == "analysis");
+    CHECK(a.id == "u-1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d-1600000000");
+    CHECK(!a.self_link.empty());
+    CHECK(a.status == "completed");
+    CHECK(a.date == 1600000000);
+    CHECK(a.stats.harmless == 60);
+    CHECK(a.stats.malicious == 5);
+    CHECK(a.stats.type_unsupported == 3);
+    CHECK(a.results.size() == 2);
+    CHECK(a.results.at("EngineOne").category == "malicious");
+    CHECK(a.results.at("EngineOne").result == "EICAR-Test-File");
+    CHECK(a.results.at("EngineTwo").engine_version == "2.1.0");
+
+    // Sparse / malformed roots fall back to defaults without throwing.
+    const vtapi::AnalysisReport sparse = vtapi::analysis_report_from_json(
+        nlohmann::json::parse(R"({"data":{"id":"x","attributes":{"status":"queued"}}})"));
+    CHECK(sparse.id == "x");
+    CHECK(sparse.status == "queued");
+    CHECK(sparse.stats.malicious == 0);
+    CHECK(vtapi::analysis_report_from_json(nlohmann::json::array()).id.empty());
+}
+
+void test_get_analysis() {
+    const std::string kKey(64, 'a');
+    const std::string kId = "u-1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d-1600000000";
+    const auto options = [&](const std::string& base_url) {
+        vtapi::ClientOptions opt;
+        opt.api_key = kKey;
+        opt.base_url = base_url;
+        opt.verify_ssl = false;
+        opt.timeout = std::chrono::seconds(5);
+        opt.requests_per_minute = 0.0;
+        return opt;
+    };
+
+    // 200 → full AnalysisReport (api key header is sent).
+    MockServer ok_server([&](const MockRequest& req) -> MockResponse {
+        const auto key = req.headers.find("x-apikey");
+        if (key == req.headers.end() || key->second != kKey)
+            return {403, "bad key"};
+        if (req.method != "GET" || req.path != "/analyses/" + kId)
+            return {404, "wrong path"};
+        return {200, load_fixture("analysis.json"), "application/json"};
+    });
+    vtapi::VirusTotal vt{options(ok_server.url(""))};
+    const vtapi::AnalysisReport a = vt.get_analysis(kId);
+    CHECK(a.id == kId);
+    CHECK(a.status == "completed");
+    CHECK(a.stats.malicious == 5);
+
+    // 404 → NotFound.
+    MockServer nf_server([](const MockRequest&) -> MockResponse {
+        return {404, R"({"error":{"code":"NotFoundError","message":"Analysis not found"}})",
+                "application/json"};
+    });
+    vtapi::VirusTotal not_found{options(nf_server.url(""))};
+    CHECK_THROWS_AS(not_found.get_analysis(kId), vtapi::NotFound);
+
+    // Empty id → VtError before any HTTP request.
+    CHECK_THROWS_AS(not_found.get_analysis(""), vtapi::VtError);
+}
+
+void test_comments() {
+    const std::string kKey(64, 'c');
+    vtapi::ClientOptions opt;
+    opt.api_key = kKey;
+    opt.verify_ssl = false;
+    opt.timeout = std::chrono::seconds(5);
+    opt.requests_per_minute = 0.0;
+
+    // Mock for comments: GET/POST on /files/{hash}/comments, /comments, /comments/{id}
+    std::string last_vote_body;
+    MockServer server([&](const MockRequest& req) -> MockResponse {
+        if (req.method == "GET" && req.path == "/comments") {
+            return {200,
+                    R"({"data":[{"type":"comment","id":"c1","links":{"self":"https://x/api/v3/comments/c1"},"attributes":{"text":"hello","date":1,"votes":{"positive":1,"negative":0},"html":"<p>hello</p>"}}],"links":{"self":"https://x/api/v3/comments"}})",
+                    "application/json"};
+        }
+        if (req.method == "GET" && req.path.find("/files/") != std::string::npos &&
+            req.path.find("/comments") != std::string::npos) {
+            return {200,
+                    R"({"data":[{"type":"comment","id":"c2","attributes":{"text":"file note","date":2,"votes":{"positive":0,"negative":0}}}]} )",
+                    "application/json"};
+        }
+        if (req.method == "GET" && req.path.find("/comments/") != std::string::npos &&
+            req.path.find("/votes") == std::string::npos) {
+            // get single comment
+            return {200,
+                    R"({"data":{"type":"comment","id":"c9","attributes":{"text":"single","date":3,"votes":{"positive":2,"negative":1}}}})",
+                    "application/json"};
+        }
+        if (req.method == "POST" && req.path.find("/comments/") != std::string::npos &&
+            req.path.find("/votes") != std::string::npos) {
+            if (req.body.find("\"type\":\"vote\"") == std::string::npos)
+                return {400, R"({"error":{"code":"BadRequestError","message":"no type"}})"};
+            last_vote_body = req.body;
+            return {200, "{}", "application/json"};
+        }
+        if (req.method == "POST" && req.path.find("/comments") != std::string::npos &&
+            req.path.find("/votes") == std::string::npos &&
+            req.path.find("/files/") == std::string::npos) {
+            // not expected here
+        }
+        if (req.method == "POST" && req.path.find("/files/") != std::string::npos &&
+            req.path.find("/comments") != std::string::npos) {
+            if (req.body.find("\"type\":\"comment\"") == std::string::npos)
+                return {400, R"({"error":{"code":"BadRequestError","message":"no type"}})"};
+            return {200, "{}", "application/json"};
+        }
+        if (req.method == "DELETE" && req.path.find("/comments/c9") != std::string::npos) {
+            return {204, "", "text/plain"};
+        }
+        return {404, "{}"};
+    });
+    opt.base_url = server.url("");
+    vtapi::VirusTotal vt{opt};
+
+    const auto latest = vt.get_comments_latest();
+    CHECK(latest.data.size() == 1);
+    CHECK(latest.data[0].id == "c1");
+    CHECK(latest.data[0].text == "hello");
+    CHECK(latest.data[0].votes_positive == 1);
+
+    const auto fcomments = vt.get_comments("files", "275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f");
+    CHECK(fcomments.data.size() == 1);
+    CHECK(fcomments.data[0].text == "file note");
+
+    const auto c = vt.get_comment("c9");
+    CHECK(c.id == "c9");
+    CHECK(c.votes_negative == 1);
+
+    vt.post_comment("files", "275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f", "nice");
+    vt.vote_comment("c9", true);
+    CHECK(last_vote_body.find("\"verdict\":\"harmless\"") != std::string::npos);
+    vt.delete_comment("c9");
+
+    vt.delete_comment("c9");
+
+    // kCommentSizeLimit enforced.
+    std::string big(vtapi::kCommentSizeLimit + 1, 'x');
+    CHECK_THROWS_AS(vt.post_comment("files", "275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f", big), vtapi::VtError);
+    CHECK_THROWS_AS(vt.post_comment("files", "bad", "hi"), vtapi::VtError);
+    CHECK_THROWS_AS(vt.get_comments("badtype", "x"), vtapi::VtError);
+}
+
+void test_votes_generic() {
+    const std::string kKey(64, 'd');
+    vtapi::ClientOptions opt;
+    opt.api_key = kKey;
+    opt.verify_ssl = false;
+    opt.timeout = std::chrono::seconds(5);
+    opt.requests_per_minute = 0.0;
+
+    std::string last_vote_body;
+    MockServer server([&](const MockRequest& req) -> MockResponse {
+        if (req.method == "POST" && req.path.find("/votes") != std::string::npos) {
+            if (req.body.find("\"type\":\"vote\"") == std::string::npos)
+                return {400, R"({"error":{"code":"BadRequestError","message":"no type"}})"};
+            last_vote_body = req.body;
+            return {200, "{}", "application/json"};
+        }
+        if (req.method == "GET" && req.path.find("/votes") != std::string::npos)
+            return {200, R"({"data":[{"id":"v1"}]})", "application/json"};
+        return {404, "{}"};
+    });
+    opt.base_url = server.url("");
+    vtapi::VirusTotal vt{opt};
+
+    vt.put_vote("files", "275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f", false);
+    CHECK(last_vote_body.find("\"verdict\":\"malicious\"") != std::string::npos);
+    vt.put_vote("urls", "http://example.com", true);
+    vt.put_vote("domains", "example.com", true);
+    vt.put_vote("ip_addresses", "8.8.8.8", false);
+
+    const std::string votes = vt.get_votes("domains", "example.com");
+    CHECK(!votes.empty());
+
+    CHECK_THROWS_AS(vt.put_vote("comments", "c1", true), vtapi::VtError);
+    CHECK_THROWS_AS(vt.put_vote("files", "bad", true), vtapi::VtError);
+}
+
+void test_relationships_generic() {
+    const std::string kKey(64, 'e');
+    vtapi::ClientOptions opt;
+    opt.api_key = kKey;
+    opt.verify_ssl = false;
+    opt.timeout = std::chrono::seconds(5);
+    opt.requests_per_minute = 0.0;
+
+    MockServer server([&](const MockRequest& req) -> MockResponse {
+        if (req.method == "GET" && req.path.find("/files/") != std::string::npos &&
+            req.path.find("/relationships/") != std::string::npos) {
+            // "/relationships/<r>/<id>" is a descriptor
+            if (req.path.find("/relationships/communicating_files/") != std::string::npos)
+                return {200, R"({"data":{"type":"file","id":"abc"},"meta":{"count":1}})", "application/json"};
+            // collection (ends with /relationships/<r>)
+            if (req.path.rfind("/relationships/communicating_files") != std::string::npos &&
+                req.path.back() != 's')
+                return {200, R"({"data":[{"type":"file","id":"abc"}]})", "application/json"};
+            return {200, R"({"data":[]})", "application/json"};
+        }
+        if (req.method == "GET" && req.path.find("/urls/") != std::string::npos &&
+            req.path.find("/relationships/resolutions") != std::string::npos)
+            return {200, R"({"data":[]})", "application/json"};
+        if (req.method == "GET" && req.path.find("/domains/") != std::string::npos &&
+            req.path.find("/relationships/") != std::string::npos)
+            return {200, R"({"data":[]})", "application/json"};
+        if (req.method == "GET" && req.path.find("/ip_addresses/") != std::string::npos &&
+            req.path.find("/relationships/") != std::string::npos)
+            return {200, R"({"data":[]})", "application/json"};
+        return {404, "{}"};
+    });
+    opt.base_url = server.url("");
+    vtapi::VirusTotal vt{opt};
+
+    const std::string rels = vt.get_relationships("files", "275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f", "communicating_files");
+    CHECK(!rels.empty());
+    const std::string desc = vt.get_relationship_descriptor("files", "275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f", "communicating_files", "abc");
+    CHECK(desc.find("\"data\"") != std::string::npos);
+
+    vt.get_relationships("urls", "http://example.com", "last_serving_ip_address");
+    vt.get_relationships("domains", "example.com", "resolutions");
+    vt.get_relationships("ip_addresses", "8.8.8.8", "resolutions");
+
+    CHECK_THROWS_AS(vt.get_relationships("files", "bad", "x"), vtapi::VtError);
+    CHECK_THROWS_AS(vt.get_relationships("comments", "c1", "x"), vtapi::VtError);
+}
+
+void test_await_analysis() {
+    const std::string kKey(64, 'b');
+    const std::string kId = "u-1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d-1600000000";
+    const auto options = [&](const std::string& base_url) {
+        vtapi::ClientOptions opt;
+        opt.api_key = kKey;
+        opt.base_url = base_url;
+        opt.verify_ssl = false;
+        opt.timeout = std::chrono::seconds(5);
+        opt.requests_per_minute = 0.0;
+        return opt;
+    };
+
+    // queued -> in-progress -> completed.
+    int count = 0;
+    MockServer server([&](const MockRequest& req) -> MockResponse {
+        if (req.method != "GET" || req.path != "/analyses/" + kId)
+            return {404, "wrong path"};
+        ++count;
+        if (count == 1)
+            return {200,
+                    R"({"data":{"type":"analysis","id":"u-1","attributes":{"status":"queued","date":1,"stats":{"harmless":0,"malicious":0,"suspicious":0,"timeout":0,"undetected":0,"type-unsupported":0},"results":{}}}})",
+                    "application/json"};
+        if (count == 2)
+            return {200,
+                    R"({"data":{"type":"analysis","id":"u-1","attributes":{"status":"in-progress","date":2,"stats":{"harmless":1,"malicious":0,"suspicious":0,"timeout":0,"undetected":0,"type-unsupported":0},"results":{}}}})",
+                    "application/json"};
+        return {200, load_fixture("analysis.json"), "application/json"};
+    });
+    vtapi::VirusTotal vt{options(server.url(""))};
+    const vtapi::AnalysisReport a = vt.await_analysis(kId, std::chrono::seconds(10), std::chrono::seconds(2));
+    CHECK(a.status == "completed");
+    CHECK(a.stats.malicious == 5);
+    CHECK(count >= 3);
+
+    // timeout -> VtError.
+    int count2 = 0;
+    MockServer never([&](const MockRequest&) -> MockResponse {
+        ++count2;
+        return {200,
+                R"({"data":{"type":"analysis","id":"u-1","attributes":{"status":"queued","date":1,"stats":{"harmless":0,"malicious":0,"suspicious":0,"timeout":0,"undetected":0,"type-unsupported":0},"results":{}}}})",
+                "application/json"};
+    });
+    vtapi::VirusTotal vt2{options(never.url(""))};
+    CHECK_THROWS_AS(vt2.await_analysis(kId, std::chrono::seconds(4), std::chrono::seconds(2)), vtapi::VtError);
+    CHECK(count2 >= 1);
+
+    // Empty id -> VtError before any HTTP request.
+    CHECK_THROWS_AS(vt2.await_analysis(""), vtapi::VtError);
 }
 
 void test_scan_url() {
@@ -2609,7 +2895,6 @@ int main() {
     test_rate_limiter();
     test_http_client();
     test_response_mapping();
-    test_file_report();
     test_scan_result();
     test_get_file_report();
     test_url_report();
@@ -2623,6 +2908,11 @@ int main() {
     test_rescan_domain();
     test_domain_comments_votes();
     test_get_resolution();
+    test_analysis();
+    test_get_analysis();
+    test_await_analysis();
+    test_comments();
+    test_votes_generic();
     test_scan_url();
     test_scan_urls();
     test_url_reports();

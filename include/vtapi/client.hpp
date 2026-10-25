@@ -8,6 +8,11 @@
 
 #include "vtapi/detail/http.hpp"
 #include "vtapi/detail/ratelimit.hpp"
+#include "vtapi/model/analysis.hpp"
+#include "vtapi/model/comment.hpp"
+#include "vtapi/model/search_result.hpp"
+#include "vtapi/model/metadata.hpp"
+#include "vtapi/model/saved_search.hpp"
 #include "vtapi/model/behaviour.hpp"
 #include "vtapi/model/domain_report.hpp"
 #include "vtapi/model/file_report.hpp"
@@ -203,6 +208,61 @@ public:
     // resolution id ("<ip><host_name>"); also surfaced via the `resolutions`
     // relationship of domains and IPs.
     Resolution get_resolution(const std::string& id);
+
+    // One analysis unit (GET /analyses/{id}). id is the analysis id returned by
+    // scan_file/scan_url/rescan_*. Use status ("queued"/"in-progress"/
+    // "completed") to know when the results are final.
+    AnalysisReport get_analysis(const std::string& id);
+
+    // Polls GET /analyses/{id} until status becomes "completed" or the timeout
+    // elapses. interval is clamped to >= 2s. Throws VtError on timeout.
+    AnalysisReport await_analysis(const std::string& id,
+                                  std::chrono::seconds timeout = std::chrono::seconds(120),
+                                  std::chrono::seconds interval = std::chrono::seconds(2));
+
+    // Comments (GET /comments or /{type}/{id}/comments). text limited to
+    // kCommentSizeLimit; exceeding throws VtError.
+    CommentListResult get_comments(const std::string& object_type,
+                                   const std::string& object_id);
+    CommentListResult get_comments_latest();
+    Comment get_comment(const std::string& comment_id);
+    void delete_comment(const std::string& comment_id);
+    void post_comment(const std::string& object_type, const std::string& object_id,
+                      const std::string& text);
+    void vote_comment(const std::string& comment_id, bool positive);
+
+    // Votes generic (POST/GET on /{type}/{id}/votes). Uses M5–M7 style
+    // endpoints; also works for comments via vote_comment above.
+    void put_vote(const std::string& object_type, const std::string& object_id,
+                  bool positive);
+    std::string get_votes(const std::string& object_type, const std::string& object_id);
+
+    // Relationships / Descriptors (generic). GET /{type}/{id}/relationships/{r}
+    // returns full objects (raw JSON). GET /{type}/{id}/relationships/{r}/{related_id}
+    // returns descriptor JSON.
+    std::string get_relationships(const std::string& object_type,
+                                  const std::string& object_id,
+                                  const std::string& relationship);
+    std::string get_relationship_descriptor(const std::string& object_type,
+                                            const std::string& object_id,
+                                            const std::string& relationship,
+                                            const std::string& related_id);
+
+    // Search (GET /search)
+    SearchResult search(const std::string& query);
+    std::string intelligence_search(const std::string& query);
+    std::string get_search_snippets(const std::string& query);
+
+    // Metadata (GET /metadata)
+    Metadata get_metadata();
+
+    // Saved searches (GET|POST /user_saved_searches, etc.)
+    SavedSearchList get_saved_searches();
+    SavedSearch get_saved_search(const std::string& id);
+    SavedSearch create_saved_search(const std::string& name, const std::string& query);
+    SavedSearch update_saved_search(const std::string& id, const std::string& name,
+                                    const std::string& query);
+    void delete_saved_search(const std::string& id);
 
 private:
     detail::HttpClient http_;

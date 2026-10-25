@@ -93,6 +93,11 @@ add_library(vtapi
   src/ip_report.cpp
   src/domain_report.cpp
   src/resolution.cpp
+  src/analysis.cpp
+  src/comment.cpp
+  src/search_result.cpp
+  src/metadata.cpp
+  src/saved_search.cpp
   src/client.cpp
 )
 add_library(vtapi::vtapi ALIAS vtapi)
