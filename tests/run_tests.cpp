@@ -19,6 +19,7 @@
 
 #include "mock_server.hpp"
 #include "vtapi/client.hpp"
+#include "vtapi/detail/base64.hpp"
 #include "vtapi/detail/hashing.hpp"
 #include "vtapi/detail/http.hpp"
 #include "vtapi/detail/ratelimit.hpp"
@@ -26,6 +27,7 @@
 #include "vtapi/detail/url.hpp"
 #include "vtapi/model/analysis.hpp"
 #include "vtapi/model/behaviour.hpp"
+#include "vtapi/model/code_insight.hpp"
 #include "vtapi/model/collection.hpp"
 #include "vtapi/model/comment.hpp"
 #include "vtapi/model/domain_report.hpp"
@@ -38,7 +40,9 @@
 #include "vtapi/model/scan_result.hpp"
 #include "vtapi/model/url_report.hpp"
 #include "vtapi/model/sigma_rule.hpp"
+#include "vtapi/model/yara_rule.hpp"
 #include "vtapi/model/yara_ruleset.hpp"
+#include "vtapi/model/zip_file.hpp"
 #include "vtapi/types.hpp"
 
 namespace {
@@ -60,16 +64,18 @@ void check_failed(const char* file, int line, const std::string& expr) {
 #define CHECK_THROWS_AS(expr, expected_type)                              \
     do {                                                                  \
         ++g_checks;                                                       \
-        bool caught_type = false, caught_base = false;                    \
+        bool caught_type = false;                                         \
         try {                                                             \
             (void)(expr);                                                 \
         } catch (const expected_type&) {                                  \
             caught_type = true;                                           \
-        } catch (const vtapi::VtError&) {                                 \
-            caught_base = true;                                           \
         } catch (...) {                                                   \
         }                                                                 \
-        if (!caught_type || caught_base)                                  \
+        /* Any type other than expected_type falls through to catch(...),  \
+           so an explicit VtError clause is unnecessary here. It would     \
+           also become a duplicate handler when expected_type is VtError   \
+           (MSVC C2312). */                                               \
+        if (!caught_type)                                                 \
             check_failed(__FILE__, __LINE__, "THROWS_AS " #expr " -> " #expected_type); \
     } while (0)
 
@@ -1880,8 +1886,10 @@ void test_download_file() {
     const std::string kKey(64, 'a');
     const std::string kSha256 =
         "275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f";
-    const std::string kEicar =
-        "X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*";
+    // The download path returns raw bytes; use a benign payload because writing
+    // antivirus-test content (EICAR) to disk can be quarantined by real-time
+    // scanners, which makes the read-back flaky.
+    const std::string kPayload = "vtapi download payload: not malware\n";
 
     vtapi::ClientOptions opt;
     opt.api_key = kKey;
@@ -1911,18 +1919,23 @@ void test_download_file() {
             return {403, "bad key"};
         if (req.path == "/files/" + kSha256 + "/download")
             return {302, "", "text/plain", signed_target};
-        if (req.path == "/dl/eicar.bin")
-            return {200, kEicar, "application/octet-stream"};
+        if (req.path == "/dl/payload.bin")
+            return {200, kPayload, "application/octet-stream"};
         return {404, "wrong path"};
     });
-    signed_target = dl_server.url("/dl/eicar.bin");
+    signed_target = dl_server.url("/dl/payload.bin");
 
     vtapi::VirusTotal vt{with_url(dl_server.url(""))};
     vt.download_file(kSha256, out.string());
-    std::ifstream in(out, std::ios::binary);
-    const std::string written{std::istreambuf_iterator<char>(in),
-                              std::istreambuf_iterator<char>{}};
-    CHECK(written == kEicar);
+    std::string written;
+    {
+        // Close the handle before remove_all below; Windows refuses to delete
+        // files that are still open.
+        std::ifstream in(out, std::ios::binary);
+        written.assign(std::istreambuf_iterator<char>(in),
+                       std::istreambuf_iterator<char>{});
+    }
+    CHECK(written == kPayload);
     // The temporary ".part" sibling must not survive a successful transfer.
     CHECK(!std::filesystem::exists(out.string() + ".part"));
 
@@ -1944,7 +1957,7 @@ void test_download_file() {
 
     // Unwritable destination → VtError and no partial file is left behind.
     MockServer ok_server([&](const MockRequest&) -> MockResponse {
-        return {200, kEicar, "application/octet-stream"};
+        return {200, kPayload, "application/octet-stream"};
     });
     vtapi::VirusTotal writable{with_url(ok_server.url(""))};
     bool unwritable = false;
@@ -1958,9 +1971,9 @@ void test_download_file() {
 
     // Junk hash → VtError before any HTTP.
     bool hit = false;
-    MockServer junk_server([&hit, &kEicar](const MockRequest&) -> MockResponse {
+    MockServer junk_server([&hit, &kPayload](const MockRequest&) -> MockResponse {
         hit = true;
-        return {200, kEicar, "application/octet-stream"};
+        return {200, kPayload, "application/octet-stream"};
     });
     vtapi::VirusTotal junk{with_url(junk_server.url(""))};
     CHECK_THROWS_AS(junk.download_file("nope", out.string()), vtapi::VtError);
@@ -2428,6 +2441,363 @@ void test_yara_ruleset() {
     const vtapi::YaraRuleset weird =
         vtapi::yara_ruleset_from_json(nlohmann::json::array());
     CHECK(weird.id.empty());
+}
+
+void test_yara_rule_and_list_models() {
+    const nlohmann::json root =
+        nlohmann::json::parse(load_fixture("yara_rule.json"));
+    const vtapi::YaraRule rule = vtapi::yara_rule_from_json(root);
+
+    CHECK(rule.type == "yara_rule");
+    CHECK(rule.id ==
+          "000544e312|SUSP_OneNote_Embedded_FileDataStoreObject_Type_Jan23_1");
+    CHECK(rule.self_link.find("/yara_rules/") != std::string::npos);
+    CHECK(rule.name == "SUSP_OneNote_Embedded_FileDataStoreObject_Type_Jan23_1");
+    CHECK(rule.author == "Florian Roth (Nextron Systems)");
+    CHECK(rule.rule.find("rule SUSP_") == 0);
+    CHECK(rule.tags.size() == 2);
+    CHECK(rule.tags[0] == "malware");
+    CHECK(rule.threat_categories.size() == 3);
+    CHECK(rule.threat_categories[2] == "dropper");
+    CHECK(rule.matches == 370);
+    CHECK(rule.enabled);
+    CHECK(rule.creation_date == 1674777600);
+    CHECK(rule.included_date == 1674777600);
+    CHECK(rule.last_modification_date == 1677575583);
+    CHECK(rule.metadata.size() == 3);
+    CHECK(rule.metadata[0]["key"] == "description");
+    CHECK(rule.metadata[2]["value"] == 65);
+    CHECK(rule.raw.contains("threat_categories"));
+
+    const vtapi::YaraRuleList list = vtapi::yara_rule_list_from_json(
+        nlohmann::json::parse(load_fixture("yara_rule_list.json")));
+    CHECK(list.cursor == "CURSOR_NEXT");
+    CHECK(list.rules.size() == 2);
+    CHECK(list.rules[0].matches == 370);
+    CHECK(list.rules[1].id == "003e1c51ef|PK_AXA_fun");
+    CHECK(!list.rules[1].enabled);
+    CHECK(list.self_link.find("/yara_rules") != std::string::npos);
+    CHECK(list.next_link.find("cursor=CURSOR_NEXT") != std::string::npos);
+
+    // Sparse and non-object roots keep defaults instead of throwing.
+    const vtapi::YaraRule sparse = vtapi::yara_rule_from_json(
+        nlohmann::json::parse(R"json({"data":{"id":"x"}})json"));
+    CHECK(sparse.id == "x");
+    CHECK(sparse.name.empty());
+    CHECK(sparse.tags.empty());
+    CHECK(sparse.matches == 0);
+    CHECK(sparse.metadata.is_array());
+    const vtapi::YaraRuleList empty =
+        vtapi::yara_rule_list_from_json(nlohmann::json::array());
+    CHECK(empty.rules.empty());
+    CHECK(empty.cursor.empty());
+}
+
+void test_yara_rules() {
+    const std::string kKey(64, 'j');
+    const std::string kId =
+        "000544e312|SUSP_OneNote_Embedded_FileDataStoreObject_Type_Jan23_1";
+
+    vtapi::ClientOptions opt;
+    opt.api_key = kKey;
+    opt.verify_ssl = false;
+    opt.timeout = std::chrono::seconds(5);
+    opt.requests_per_minute = 0.0;
+
+    MockServer server([&](const MockRequest& req) -> MockResponse {
+        const auto key = req.headers.find("x-apikey");
+        if (key == req.headers.end() || key->second != kKey)
+            return {403, "bad key"};
+        if (req.method == "GET" &&
+            req.path ==
+                "/yara_rules?limit=2&cursor=abc&filter=tag%3Atrojan&order=matches-")
+            return {200, load_fixture("yara_rule_list.json"), "application/json"};
+        if (req.method == "GET" && req.path == "/yara_rules/" + kId)
+            return {200, load_fixture("yara_rule.json"), "application/json"};
+        if (req.method == "GET" &&
+            req.path == "/yara_rules/" + kId + "/yara_ruleset?limit=2")
+            return {200,
+                    R"({"data":[{"type":"yara_ruleset","id":"owner_x","attributes":{"name":"ruleset"}}],"meta":{"count":1},"links":{"self":"https://x/yara_ruleset"}})",
+                    "application/json"};
+        if (req.method == "GET" &&
+            req.path ==
+                "/yara_rules/" + kId + "/relationships/yara_ruleset?limit=2")
+            return {200,
+                    R"({"data":[{"type":"yara_ruleset","id":"owner_x"}],"meta":{"count":1}})",
+                    "application/json"};
+        return {400, "unexpected request"};
+    });
+    opt.base_url = server.url("");
+    vtapi::VirusTotal vt{opt};
+
+    const vtapi::YaraRuleList list =
+        vt.list_yara_rules(2, "abc", "tag:trojan", "matches-");
+    CHECK(list.cursor == "CURSOR_NEXT");
+    CHECK(list.rules.size() == 2);
+    CHECK(list.next_link.find("cursor=CURSOR_NEXT") != std::string::npos);
+
+    const vtapi::YaraRule rule = vt.get_yara_rule(kId);
+    CHECK(rule.id == kId);
+    CHECK(rule.matches == 370);
+
+    const vtapi::RelationshipList related =
+        vt.get_yara_rule_relationships(kId, "yara_ruleset", 2);
+    CHECK(related.count == 1);
+    CHECK(related.objects.size() == 1);
+    CHECK(related.objects[0].type == "yara_ruleset");
+    CHECK(related.objects[0].id == "owner_x");
+    CHECK(related.objects[0].raw.contains("attributes"));
+
+    const vtapi::RelationshipList descriptors =
+        vt.get_yara_rule_relationship_descriptors(kId, "yara_ruleset", 2);
+    CHECK(descriptors.objects.size() == 1);
+    CHECK(descriptors.objects[0].id == "owner_x");
+    CHECK(!descriptors.objects[0].raw.contains("attributes"));
+
+    // Request-building validation happens before any HTTP call.
+    CHECK_THROWS_AS(vt.list_yara_rules(0), vtapi::VtError);
+    CHECK_THROWS_AS(vt.get_yara_rule(""), vtapi::VtError);
+    CHECK_THROWS_AS(vt.get_yara_rule_relationships("", "yara_ruleset"),
+                    vtapi::VtError);
+    CHECK_THROWS_AS(vt.get_yara_rule_relationships(kId, ""), vtapi::VtError);
+    CHECK_THROWS_AS(vt.get_yara_rule_relationships(kId, "yara_ruleset", 0),
+                    vtapi::VtError);
+    CHECK_THROWS_AS(
+        vt.get_yara_rule_relationship_descriptors("", "yara_ruleset"),
+        vtapi::VtError);
+    CHECK_THROWS_AS(
+        vt.get_yara_rule_relationship_descriptors(kId, "yara_ruleset", 0),
+        vtapi::VtError);
+}
+
+void test_zip_files() {
+    const std::string kKey(64, 'k');
+    const std::string kHash1 =
+        "275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f";
+    const std::string kHash2 =
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+    const std::string kPayload = "PK\x03\x04" "fake zip bytes";
+
+    vtapi::ClientOptions opt;
+    opt.api_key = kKey;
+    opt.verify_ssl = false;
+    opt.timeout = std::chrono::seconds(5);
+    opt.requests_per_minute = 0.0;
+
+    std::string create_body;
+    std::string signed_target;
+    MockServer server([&](const MockRequest& req) -> MockResponse {
+        const auto key = req.headers.find("x-apikey");
+        if (key == req.headers.end() || key->second != kKey)
+            return {403, "bad key"};
+        if (req.method == "POST" && req.path == "/intelligence/zip_files") {
+            create_body = req.body;
+            return {200,
+                    R"({"data":{"type":"zip_file","id":"4939392292","attributes":{"status":"starting","progress":0,"files_ok":0,"files_error":0}}})",
+                    "application/json"};
+        }
+        if (req.method == "GET" && req.path == "/intelligence/zip_files/4939392292")
+            return {200,
+                    R"({"data":{"type":"zip_file","id":"4939392292","attributes":{"status":"finished","progress":100,"files_ok":2,"files_error":0}}})",
+                    "application/json"};
+        if (req.method == "GET" &&
+            req.path == "/intelligence/zip_files/4939392292/download_url")
+            return {200, R"({"data":")" + signed_target + R"("})",
+                    "application/json"};
+        if (req.method == "GET" &&
+            req.path == "/intelligence/zip_files/4939392292/download")
+            return {302, "", "text/plain", signed_target};
+        if (req.method == "GET" && req.path == "/dl/files.zip")
+            return {200, kPayload, "application/zip"};
+        return {400, "unexpected request"};
+    });
+    signed_target = server.url("/dl/files.zip");
+    opt.base_url = server.url("");
+    vtapi::VirusTotal vt{opt};
+
+    const vtapi::ZipFile created = vt.create_zip({kHash1, kHash2}, "secret");
+    CHECK(created.type == "zip_file");
+    CHECK(created.id == "4939392292");
+    CHECK(created.status == "starting");
+    CHECK(created.progress == 0);
+    CHECK(create_body.find("\"password\":\"secret\"") != std::string::npos);
+    CHECK(create_body.find("\"hashes\":[") != std::string::npos);
+    CHECK(create_body.find(kHash1) != std::string::npos);
+    CHECK(create_body.find(kHash2) != std::string::npos);
+
+    const vtapi::ZipFile status = vt.get_zip_status("4939392292");
+    CHECK(status.status == "finished");
+    CHECK(status.progress == 100);
+    CHECK(status.files_ok == 2);
+    CHECK(status.files_error == 0);
+
+    CHECK(vt.get_zip_download_url("4939392292") == signed_target);
+
+    const std::filesystem::path temp =
+        std::filesystem::temp_directory_path() /
+        ("vtapi_zip_test_" +
+         std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(temp);
+    const std::filesystem::path out = temp / "files.zip";
+    vt.download_zip("4939392292", out.string());
+    std::string written;
+    {
+        std::ifstream in(out, std::ios::binary);
+        written.assign(std::istreambuf_iterator<char>(in),
+                       std::istreambuf_iterator<char>{});
+    }
+    CHECK(written == kPayload);
+    CHECK(!std::filesystem::exists(temp / "files.zip.part"));
+    std::filesystem::remove_all(temp);
+
+    // Sparse objects keep defaults.
+    const vtapi::ZipFile sparse = vtapi::zip_file_from_json(
+        nlohmann::json::parse(R"json({"data":{"id":"z"}})json"));
+    CHECK(sparse.id == "z");
+    CHECK(sparse.status.empty());
+    CHECK(sparse.progress == 0);
+
+    CHECK_THROWS_AS(vt.create_zip({}), vtapi::VtError);
+    CHECK_THROWS_AS(vt.create_zip({"not-a-hash"}), vtapi::VtError);
+    CHECK_THROWS_AS(vt.get_zip_status(""), vtapi::VtError);
+    CHECK_THROWS_AS(vt.get_zip_download_url(""), vtapi::VtError);
+    CHECK_THROWS_AS(vt.download_zip("", out.string()), vtapi::VtError);
+    CHECK_THROWS_AS(vt.download_zip("4939392292", ""), vtapi::VtError);
+}
+
+void test_code_insights() {
+    const std::string kKey(64, 'l');
+    const std::string kSummary =
+        "The code creates a registry Run key to persist across reboots.";
+    const std::string kDetail =
+        "1. Opens the Run key in the registry. 2. Writes the payload path.";
+    const std::string kLegacy = "Legacy single-description response.";
+    const std::string kCode = "int main() { return 0; }";
+
+    vtapi::ClientOptions opt;
+    opt.api_key = kKey;
+    opt.verify_ssl = false;
+    opt.timeout = std::chrono::seconds(5);
+    opt.requests_per_minute = 0.0;
+
+    std::string request_body;
+    // 0 = current summary/description object, 1 = legacy base64 string,
+    // 2 = invalid base64, 3 = unexpected data type.
+    int response_mode = 0;
+    MockServer server([&](const MockRequest& req) -> MockResponse {
+        const auto key = req.headers.find("x-apikey");
+        if (key == req.headers.end() || key->second != kKey)
+            return {403, "bad key"};
+        if (req.method != "POST" || req.path != "/codeinsights/analyse-binary")
+            return {400, "unexpected request"};
+        request_body = req.body;
+        if (response_mode == 1)
+            return {200,
+                    "{\"data\":\"" + vtapi::detail::base64_encode(kLegacy) +
+                        "\"}",
+                    "application/json"};
+        if (response_mode == 2)
+            return {200, R"({"data":"!!!!"})", "application/json"};
+        if (response_mode == 3)
+            return {200, R"({"data":[]})", "application/json"};
+        return {200,
+                "{\"data\":{\"summary\":\"" + kSummary +
+                    "\",\"description\":\"" + kDetail + "\"}}",
+                "application/json"};
+    });
+    opt.base_url = server.url("");
+    vtapi::VirusTotal vt{opt};
+
+    const vtapi::CodeInsightReport report =
+        vt.analyse_code(kCode, "decompiled");
+    CHECK(report.summary == kSummary);
+    CHECK(report.description == kDetail);
+    CHECK(report.raw.is_object());
+    nlohmann::json body = nlohmann::json::parse(request_body);
+    CHECK(body["data"]["code"] == vtapi::detail::base64_encode(kCode));
+    CHECK(body["data"]["code_type"] == "decompiled");
+    CHECK(!body["data"].contains("history"));
+
+    vtapi::CodeInsightHistory history;
+    history.request = "int f();";
+    history.summary = "prior summary";
+    history.description = "analyst note";
+    const vtapi::CodeInsightReport chained =
+        vt.analyse_code(kCode, "disassembled", {history});
+    CHECK(chained.description == kDetail);
+    body = nlohmann::json::parse(request_body);
+    CHECK(body["data"]["code_type"] == "disassembled");
+    CHECK(body["data"]["history"].size() == 1);
+    CHECK(body["data"]["history"][0]["request"] ==
+          vtapi::detail::base64_encode(history.request));
+    CHECK(body["data"]["history"][0]["response"]["summary"] == "prior summary");
+    CHECK(body["data"]["history"][0]["response"]["description"] ==
+          "analyst note");
+
+    // The older documented shape still decodes into `description`.
+    response_mode = 1;
+    const vtapi::CodeInsightReport legacy =
+        vt.analyse_code(kCode, "decompiled");
+    CHECK(legacy.summary.empty());
+    CHECK(legacy.description == kLegacy);
+    CHECK(legacy.raw.is_string());
+
+    response_mode = 2;
+    CHECK_THROWS_AS(vt.analyse_code(kCode, "decompiled"), vtapi::VtError);
+    response_mode = 3;
+    CHECK_THROWS_AS(vt.analyse_code(kCode, "decompiled"), vtapi::VtError);
+
+    // Base64 helper round-trips padded, unpadded and binary input.
+    CHECK(vtapi::detail::base64_encode("") == "");
+    CHECK(vtapi::detail::base64_encode("f") == "Zg==");
+    CHECK(vtapi::detail::base64_encode("fo") == "Zm8=");
+    CHECK(vtapi::detail::base64_encode("foo") == "Zm9v");
+    std::string decoded;
+    CHECK(vtapi::detail::base64_decode("Zm9v", decoded) && decoded == "foo");
+    CHECK(vtapi::detail::base64_decode("Zg==", decoded) && decoded == "f");
+    CHECK(vtapi::detail::base64_decode("Zg", decoded) && decoded == "f");
+    CHECK(vtapi::detail::base64_decode("Zm8=", decoded) && decoded == "fo");
+    CHECK(!vtapi::detail::base64_decode("Z", decoded) && decoded.empty());
+    CHECK(!vtapi::detail::base64_decode("!!!!", decoded) && decoded.empty());
+    const std::string binary("\x00\x01\xFE\xFF", 4);
+    CHECK(vtapi::detail::base64_decode(vtapi::detail::base64_encode(binary),
+                                       decoded) == true);
+    CHECK(decoded == binary);
+
+    CHECK_THROWS_AS(vt.analyse_code("", "decompiled"), vtapi::VtError);
+    CHECK_THROWS_AS(vt.analyse_code(kCode, "source"), vtapi::VtError);
+    CHECK_THROWS_AS(
+        vt.analyse_code(kCode, "decompiled",
+                        std::vector<vtapi::CodeInsightHistory>{
+                            vtapi::CodeInsightHistory{}}),
+        vtapi::VtError);
+}
+
+void test_popular_threat_categories() {
+    const std::string kKey(64, 'm');
+
+    vtapi::ClientOptions opt;
+    opt.api_key = kKey;
+    opt.verify_ssl = false;
+    opt.timeout = std::chrono::seconds(5);
+    opt.requests_per_minute = 0.0;
+
+    MockServer server([](const MockRequest& req) -> MockResponse {
+        if (req.method != "GET" || req.path != "/popular_threat_categories")
+            return {400, "unexpected request"};
+        return {200,
+                R"({"data":["adware","banker","downloader","dropper","ransomware","trojan"]})",
+                "application/json"};
+    });
+    opt.base_url = server.url("");
+    vtapi::VirusTotal vt{opt};
+
+    const std::vector<std::string> categories =
+        vt.get_popular_threat_categories();
+    CHECK(categories.size() == 6);
+    CHECK(categories[0] == "adware");
+    CHECK(categories[2] == "downloader");
+    CHECK(categories[5] == "trojan");
 }
 
 void test_file_relationships() {
@@ -3668,6 +4038,11 @@ int main() {
     test_behaviour_relationships_and_files();
     test_sigma_rule();
     test_yara_ruleset();
+    test_yara_rule_and_list_models();
+    test_yara_rules();
+    test_zip_files();
+    test_code_insights();
+    test_popular_threat_categories();
     test_file_relationships();
     test_mitre_summary();
     test_relationships_generic();

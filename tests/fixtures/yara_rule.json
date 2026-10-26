@@ -1,0 +1,42 @@
+{
+  "data": {
+    "attributes": {
+      "name": "SUSP_OneNote_Embedded_FileDataStoreObject_Type_Jan23_1",
+      "threat_categories": [
+        "trojan",
+        "downloader",
+        "dropper"
+      ],
+      "author": "Florian Roth (Nextron Systems)",
+      "matches": 370,
+      "enabled": true,
+      "rule": "rule SUSP_OneNote_Embedded_FileDataStoreObject_Type_Jan23_1 {\n    strings:\n        $x1 = { e7 16 e3 bd }\n    condition:\n        $x1\n}",
+      "creation_date": 1674777600,
+      "included_date": 1674777600,
+      "meta": [
+        {
+          "key": "description",
+          "value": "Detects suspicious embedded file types in OneNote files"
+        },
+        {
+          "key": "author",
+          "value": "Florian Roth"
+        },
+        {
+          "key": "score",
+          "value": 65
+        }
+      ],
+      "last_modification_date": 1677575583,
+      "tags": [
+        "malware",
+        "onenote"
+      ]
+    },
+    "type": "yara_rule",
+    "id": "000544e312|SUSP_OneNote_Embedded_FileDataStoreObject_Type_Jan23_1",
+    "links": {
+      "self": "https://www.virustotal.com/api/v3/yara_rules/000544e312|SUSP_OneNote_Embedded_FileDataStoreObject_Type_Jan23_1"
+    }
+  }
+}

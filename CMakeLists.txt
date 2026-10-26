@@ -88,7 +88,9 @@ add_library(vtapi
   src/mitre.cpp
   src/relationship.cpp
   src/sigma_rule.cpp
+  src/yara_rule.cpp
   src/yara_ruleset.cpp
+  src/zip_file.cpp
   src/url_report.cpp
   src/ip_report.cpp
   src/domain_report.cpp

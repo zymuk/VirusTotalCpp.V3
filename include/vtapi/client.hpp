@@ -9,6 +9,7 @@
 #include "vtapi/detail/http.hpp"
 #include "vtapi/detail/ratelimit.hpp"
 #include "vtapi/model/analysis.hpp"
+#include "vtapi/model/code_insight.hpp"
 #include "vtapi/model/collection.hpp"
 #include "vtapi/model/comment.hpp"
 #include "vtapi/model/search_result.hpp"
@@ -25,7 +26,9 @@
 #include "vtapi/model/resolution.hpp"
 #include "vtapi/model/scan_result.hpp"
 #include "vtapi/model/sigma_rule.hpp"
+#include "vtapi/model/yara_rule.hpp"
 #include "vtapi/model/yara_ruleset.hpp"
+#include "vtapi/model/zip_file.hpp"
 
 namespace vtapi {
 
@@ -142,6 +145,46 @@ public:
 
     // A single YARA ruleset (GET /yara_rulesets/{id}).
     YaraRuleset get_yara_ruleset(const std::string& id);
+
+    // Crowdsourced YARA rules (GET /yara_rules), distinct from the Livehunt
+    // rulesets above. filter uses v3 search syntax (e.g. "tag:trojan") and
+    // order accepts values such as "matches-" for descending match counts.
+    YaraRuleList list_yara_rules(int limit = 10, const std::string& cursor = {},
+                                 const std::string& filter = {},
+                                 const std::string& order = {});
+    YaraRule get_yara_rule(const std::string& id);
+
+    // Crowdsourced rule relationships. "yara_ruleset" is the only relationship
+    // v3 exposes today; the descriptor endpoint returns the shortened object.
+    RelationshipList get_yara_rule_relationships(
+        const std::string& id, const std::string& relationship = "yara_ruleset",
+        int limit = 10, const std::string& cursor = {});
+    RelationshipList get_yara_rule_relationship_descriptors(
+        const std::string& id, const std::string& relationship = "yara_ruleset",
+        int limit = 10, const std::string& cursor = {});
+
+    // Bulk download (premium): build a password-protected ZIP from file hashes
+    // (md5/sha1/sha256). Creation is asynchronous; poll get_zip_status until
+    // status is "finished" before requesting a URL or downloading.
+    ZipFile create_zip(const std::vector<std::string>& hashes,
+                       const std::string& password = {});
+    ZipFile get_zip_status(const std::string& id);
+    // Signed URL, reusable for 1 hour.
+    std::string get_zip_download_url(const std::string& id);
+    // Streams the archive to dest_path through the redirecting endpoint,
+    // writing atomically like download_file.
+    void download_zip(const std::string& id, const std::string& dest_path);
+
+    // Code Insights (POST /codeinsights/analyse-binary, capped at 50 req/day).
+    // code is the raw disassembled/decompiled text (base64 on the wire) and
+    // code_type is "disassembled" or "decompiled". history chains earlier
+    // analyses as context.
+    CodeInsightReport analyse_code(const std::string& code,
+                                   const std::string& code_type,
+                                   const std::vector<CodeInsightHistory>& history = {});
+
+    // Malware categories used in AV verdicts (GET /popular_threat_categories).
+    std::vector<std::string> get_popular_threat_categories();
 
     // MITRE ATT&CK tree for a file (GET /files/{id}/behaviour_mitre_trees).
     // The response groups tactics per sandbox name; the trees are kept nested

@@ -1,0 +1,46 @@
+{
+  "meta": {
+    "cursor": "CURSOR_NEXT"
+  },
+  "data": [
+    {
+      "attributes": {
+        "name": "SUSP_OneNote_Embedded_FileDataStoreObject_Type_Jan23_1",
+        "threat_categories": [
+          "trojan",
+          "downloader"
+        ],
+        "author": "Florian Roth (Nextron Systems)",
+        "matches": 370,
+        "enabled": true,
+        "rule": "rule SUSP_OneNote_Embedded_FileDataStoreObject_Type_Jan23_1 { condition: true }",
+        "creation_date": 1674777600,
+        "included_date": 1674777600,
+        "last_modification_date": 1677575583,
+        "tags": [
+          "malware"
+        ]
+      },
+      "type": "yara_rule",
+      "id": "000544e312|SUSP_OneNote_Embedded_FileDataStoreObject_Type_Jan23_1",
+      "links": {
+        "self": "https://www.virustotal.com/api/v3/yara_rules/000544e312|SUSP_OneNote_Embedded_FileDataStoreObject_Type_Jan23_1"
+      }
+    },
+    {
+      "attributes": {
+        "name": "PK_AXA_fun",
+        "author": "Thomas Damonneville",
+        "matches": 0,
+        "enabled": false,
+        "rule": "rule PK_AXA_fun { condition: true }"
+      },
+      "type": "yara_rule",
+      "id": "003e1c51ef|PK_AXA_fun"
+    }
+  ],
+  "links": {
+    "self": "https://www.virustotal.com/api/v3/yara_rules?limit=2",
+    "next": "https://www.virustotal.com/api/v3/yara_rules?limit=2&cursor=CURSOR_NEXT"
+  }
+}

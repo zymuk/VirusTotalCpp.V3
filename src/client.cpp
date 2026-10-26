@@ -7,7 +7,9 @@
 #include <system_error>
 #include <utility>
 
+#include "vtapi/detail/base64.hpp"
 #include "vtapi/detail/hashing.hpp"
+#include "vtapi/detail/json.hpp"
 #include "vtapi/detail/response.hpp"
 #include "vtapi/detail/url.hpp"
 #include "vtapi/types.hpp"
@@ -95,6 +97,32 @@ std::string data_string_from_json(const nlohmann::json& root, const char* what) 
     return root["data"].get<std::string>();
 }
 
+// A failed transfer must not leave a partial file at the destination, so write
+// into a temporary sibling and rename it into place on success.
+void write_file_atomic(const std::string& dest_path, const std::string& body) {
+    const std::filesystem::path dest(dest_path);
+    const std::filesystem::path tmp =
+        dest.parent_path() / (dest.filename().string() + ".part");
+    {
+        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+        if (!out)
+            throw VtError("cannot write file: " + dest_path);
+        out.write(body.data(), static_cast<std::streamsize>(body.size()));
+        if (!out) {
+            out.close();
+            std::error_code ec;
+            std::filesystem::remove(tmp, ec);
+            throw VtError("cannot write file: " + dest_path);
+        }
+    }
+    std::error_code ec;
+    std::filesystem::rename(tmp, dest, ec);
+    if (ec) {
+        std::filesystem::remove(tmp, ec);
+        throw VtError("cannot write file: " + dest_path);
+    }
+}
+
 } // namespace
 
 ScanResult VirusTotal::scan_large_file(std::vector<uint8_t> data,
@@ -157,29 +185,7 @@ void VirusTotal::download_file(const std::string& hash, const std::string& dest_
         http_.get(base_url_ + "/files/" + hash + "/download");
     const std::string body = detail::body_or_throw(resp);
 
-    // A failed transfer must not leave a partial file at the destination, so
-    // write into a temporary sibling and rename it into place on success.
-    const std::filesystem::path dest(dest_path);
-    const std::filesystem::path tmp =
-        dest.parent_path() / (dest.filename().string() + ".part");
-    {
-        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
-        if (!out)
-            throw VtError("cannot write file: " + dest_path);
-        out.write(body.data(), static_cast<std::streamsize>(body.size()));
-        if (!out) {
-            out.close();
-            std::error_code ec;
-            std::filesystem::remove(tmp, ec);
-            throw VtError("cannot write file: " + dest_path);
-        }
-    }
-    std::error_code ec;
-    std::filesystem::rename(tmp, dest, ec);
-    if (ec) {
-        std::filesystem::remove(tmp, ec);
-        throw VtError("cannot write file: " + dest_path);
-    }
+    write_file_atomic(dest_path, body);
 }
 
 ScanResult VirusTotal::rescan_file(const std::string& hash) {
@@ -1516,6 +1522,182 @@ void VirusTotal::remove_graph_editor(const std::string& id,
     const detail::HttpResponse resp = http_.del(
         graph_url(base_url_, id) + "/relationships/editors/" + user_or_group_id);
     detail::json_or_throw(resp);
+}
+
+YaraRuleList VirusTotal::list_yara_rules(int limit, const std::string& cursor,
+                                         const std::string& filter,
+                                         const std::string& order) {
+    if (limit < 1)
+        throw VtError("invalid YARA rule list limit");
+    const std::string url = append_query(
+        base_url_ + "/yara_rules",
+        {{"limit", std::to_string(limit)},
+         {"cursor", cursor},
+         {"filter", filter},
+         {"order", order}});
+    limiter_.wait();
+    const detail::HttpResponse resp = http_.get(url);
+    return yara_rule_list_from_json(detail::json_or_throw(resp));
+}
+
+YaraRule VirusTotal::get_yara_rule(const std::string& id) {
+    if (id.empty())
+        throw VtError("invalid YARA rule id");
+    limiter_.wait();
+    const detail::HttpResponse resp = http_.get(base_url_ + "/yara_rules/" + id);
+    return yara_rule_from_json(detail::json_or_throw(resp));
+}
+
+RelationshipList VirusTotal::get_yara_rule_relationships(
+    const std::string& id, const std::string& relationship, int limit,
+    const std::string& cursor) {
+    if (id.empty() || relationship.empty())
+        throw VtError("invalid YARA rule relationship request");
+    if (limit < 1)
+        throw VtError("invalid relationship limit");
+    const std::string url = append_query(
+        base_url_ + "/yara_rules/" + id + "/" + relationship,
+        {{"limit", std::to_string(limit)}, {"cursor", cursor}});
+    limiter_.wait();
+    const detail::HttpResponse resp = http_.get(url);
+    return relationship_list_from_json(detail::json_or_throw(resp));
+}
+
+RelationshipList VirusTotal::get_yara_rule_relationship_descriptors(
+    const std::string& id, const std::string& relationship, int limit,
+    const std::string& cursor) {
+    if (id.empty() || relationship.empty())
+        throw VtError("invalid YARA rule relationship request");
+    if (limit < 1)
+        throw VtError("invalid relationship limit");
+    const std::string url = append_query(
+        base_url_ + "/yara_rules/" + id + "/relationships/" + relationship,
+        {{"limit", std::to_string(limit)}, {"cursor", cursor}});
+    limiter_.wait();
+    const detail::HttpResponse resp = http_.get(url);
+    return relationship_list_from_json(detail::json_or_throw(resp));
+}
+
+ZipFile VirusTotal::create_zip(const std::vector<std::string>& hashes,
+                               const std::string& password) {
+    if (hashes.empty())
+        throw VtError("zip requires at least one file hash");
+    for (const auto& hash : hashes) {
+        if (!is_hex_hash(hash))
+            throw VtError("invalid hash: expected 32/40/64 hex characters");
+    }
+
+    nlohmann::json body;
+    body["data"]["hashes"] = hashes;
+    if (!password.empty())
+        body["data"]["password"] = password;
+
+    limiter_.wait();
+    const detail::HttpResponse resp = http_.post(
+        base_url_ + "/intelligence/zip_files", body.dump(),
+        "application/json");
+    return zip_file_from_json(detail::json_or_throw(resp));
+}
+
+ZipFile VirusTotal::get_zip_status(const std::string& id) {
+    if (id.empty())
+        throw VtError("invalid zip id");
+    limiter_.wait();
+    const detail::HttpResponse resp =
+        http_.get(base_url_ + "/intelligence/zip_files/" + id);
+    return zip_file_from_json(detail::json_or_throw(resp));
+}
+
+std::string VirusTotal::get_zip_download_url(const std::string& id) {
+    if (id.empty())
+        throw VtError("invalid zip id");
+    limiter_.wait();
+    const detail::HttpResponse resp =
+        http_.get(base_url_ + "/intelligence/zip_files/" + id + "/download_url");
+    return data_string_from_json(detail::json_or_throw(resp),
+                                 "zip download_url response");
+}
+
+void VirusTotal::download_zip(const std::string& id,
+                              const std::string& dest_path) {
+    if (id.empty())
+        throw VtError("invalid zip id");
+    if (dest_path.empty())
+        throw VtError("invalid destination path");
+    limiter_.wait();
+    const detail::HttpResponse resp =
+        http_.get(base_url_ + "/intelligence/zip_files/" + id + "/download");
+    write_file_atomic(dest_path, detail::body_or_throw(resp));
+}
+
+CodeInsightReport VirusTotal::analyse_code(
+    const std::string& code, const std::string& code_type,
+    const std::vector<CodeInsightHistory>& history) {
+    if (code.empty())
+        throw VtError("code insight requires a non-empty code block");
+    if (code_type != "disassembled" && code_type != "decompiled")
+        throw VtError("code_type must be 'disassembled' or 'decompiled'");
+    for (const auto& entry : history) {
+        if (entry.request.empty())
+            throw VtError("code insight history entry requires a code block");
+    }
+
+    nlohmann::json body;
+    body["data"]["code"] = detail::base64_encode(code);
+    body["data"]["code_type"] = code_type;
+    if (!history.empty()) {
+        nlohmann::json entries = nlohmann::json::array();
+        for (const auto& entry : history) {
+            nlohmann::json item;
+            item["request"] = detail::base64_encode(entry.request);
+            item["response"]["summary"] = entry.summary;
+            item["response"]["description"] = entry.description;
+            entries.push_back(std::move(item));
+        }
+        body["data"]["history"] = std::move(entries);
+    }
+
+    limiter_.wait();
+    const detail::HttpResponse resp = http_.post(
+        base_url_ + "/codeinsights/analyse-binary", body.dump(),
+        "application/json");
+    const nlohmann::json root = detail::json_or_throw(resp);
+    if (!root.is_object() || !root.contains("data"))
+        throw VtError("code insights response: missing data");
+
+    CodeInsightReport report;
+    report.raw = root["data"];
+    if (report.raw.is_object()) {
+        report.summary = detail::json_string(report.raw, "summary");
+        report.description = detail::json_string(report.raw, "description");
+    } else if (report.raw.is_string()) {
+        // Older payload shape: data is the base64-encoded description.
+        if (!detail::base64_decode(report.raw.get<std::string>(),
+                                   report.description))
+            throw VtError("code insights response: invalid base64");
+    } else {
+        throw VtError("code insights response: unexpected data type");
+    }
+    return report;
+}
+
+std::vector<std::string> VirusTotal::get_popular_threat_categories() {
+    limiter_.wait();
+    const detail::HttpResponse resp =
+        http_.get(base_url_ + "/popular_threat_categories");
+    const nlohmann::json root = detail::json_or_throw(resp);
+    if (!root.is_object() || !root.contains("data") || !root["data"].is_array())
+        throw VtError("popular threat categories: missing data array");
+
+    std::vector<std::string> categories;
+    for (const auto& item : root["data"]) {
+        if (item.is_string())
+            categories.push_back(item.get<std::string>());
+        else if (item.is_object() && item.contains("id") &&
+                 item["id"].is_string())
+            categories.push_back(item["id"].get<std::string>());
+    }
+    return categories;
 }
 
 } // namespace vtapi
